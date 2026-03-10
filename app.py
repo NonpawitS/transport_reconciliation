@@ -34,6 +34,16 @@ def get_wms_df_full(wms_bytes: bytes, wms_type: str) -> pd.DataFrame:
         return parse_fc_xlsx(wms_bytes, truck_load_no="")
 
 
+def get_cached_wms_df(wms_file, wms_type: str) -> pd.DataFrame:
+    """Return parsed WMS df, cached in session_state by filename+size."""
+    cache_key = f"wms_df_{wms_file.name}_{wms_file.size}"
+    if cache_key not in st.session_state:
+        wms_file.seek(0)
+        st.session_state[cache_key] = get_wms_df_full(wms_file.read(), wms_type)
+        wms_file.seek(0)
+    return st.session_state[cache_key]
+
+
 # ── Step 1: File Upload ───────────────────────────────────────────────────────
 st.subheader("Step 1 — อัปโหลดไฟล์")
 col_carrier, col_wms = st.columns(2)
@@ -52,6 +62,9 @@ with col_carrier:
         elif ext in ("xlsx", "xls"):
             st.info("ℹ️ ตรวจจับ: **Kerry** (Excel) — Phase 2")
             carrier_type = "Kerry"
+        st.session_state["carrier_type"] = carrier_type
+    else:
+        carrier_type = st.session_state.get("carrier_type")
 
 with col_wms:
     st.markdown("**🏭 WMS Export DO File**")
@@ -64,10 +77,14 @@ with col_wms:
         elif ext_wms in ("xlsx", "xls"):
             st.success("✅ ตรวจจับ: **FC** (Excel)")
             wms_type = "FC"
+        st.session_state["wms_type"] = wms_type
+    else:
+        wms_type = st.session_state.get("wms_type")
 
 # ── Step 2: Transport / Load No. ──────────────────────────────────────────────
 filter_value = ""
 both_ready = carrier_file and wms_file and carrier_type == "SPX" and wms_type in ("WDCS", "FC")
+
 
 if both_ready:
     st.divider()
@@ -77,24 +94,17 @@ if both_ready:
     match_col  = "Web Order"    if wms_type == "WDCS" else "Weborder DO"
     label_name = "Transport No. (WDCS)" if wms_type == "WDCS" else "Truck Load No. (FC)"
 
-    # ── FC: check if Truck Load No column has any values ─────────────────────
-    fc_load_unavailable = False
+    # ── FC: always skip Truck Load No filter (read lazily on demand) ─────────
     if wms_type == "FC":
-        check_key = f"fc_load_check_{wms_file.name}"
-        if check_key not in st.session_state:
-            wms_file.seek(0)
-            from parsers.fc_parser import get_fc_load_numbers
-            st.session_state[check_key] = get_fc_load_numbers(wms_file.read())
-            wms_file.seek(0)
-        fc_load_unavailable = len(st.session_state[check_key]) == 0
-
-    if fc_load_unavailable:
-        # FC has no Truck Load No — skip filter, use tracking/weborder matching directly
         st.info(
-            "ℹ️ ไฟล์ FC นี้ยังไม่มีข้อมูล **Truck Load No.** — ระบบจะ Reconcile โดยไม่ Filter "
+            "ℹ️ FC — ระบุ **Truck Load No.** (ถ้ามี) หรือข้ามเพื่อ Reconcile ทั้งไฟล์ "
             "(จับคู่ด้วย **3PL Tracking No.** ก่อน แล้ว Fallback ด้วย **Weborder DO**)"
         )
-        filter_value = ""
+        filter_value = st.text_input(
+            "Truck Load No. (FC) — ไม่บังคับ",
+            key="transport_manual_fc",
+            placeholder="ระบุถ้ามี หรือเว้นว่างเพื่อใช้ทั้งไฟล์",
+        )
     else:
         # ── Mode selector ─────────────────────────────────────────────────────
         input_mode = st.radio(
@@ -129,9 +139,7 @@ if both_ready:
                                 carrier_file.seek(0)
                                 _, carrier_keys = get_carrier_keys(carrier_file.read(), carrier_type)
                                 carrier_file.seek(0)
-                                wms_file.seek(0)
-                                wms_full_df = get_wms_df_full(wms_file.read(), wms_type)
-                                wms_file.seek(0)
+                                wms_full_df = get_cached_wms_df(wms_file, wms_type)
                                 matches = find_matching_transports(carrier_keys, wms_full_df, filter_col, match_col)
                                 st.session_state[cache_key] = matches
                                 st.rerun()
@@ -213,39 +221,66 @@ run_btn = st.button(
 
 # ── Main Reconcile Logic ──────────────────────────────────────────────────────
 if run_btn and both_ready:
-    with st.spinner("กำลังประมวลผล..."):
+    _prog = st.progress(0, text="📄 กำลังอ่าน Carrier file...")
 
-        carrier_file.seek(0)
-        try:
-            spx_df = parse_spx_pdf(carrier_file.read())
-            ok, err = validate_spx_df(spx_df)
-            if not ok:
-                st.error(f"❌ SPX Parser Error: {err}")
+    carrier_file.seek(0)
+    try:
+        spx_df = parse_spx_pdf(carrier_file.read())
+        ok, err = validate_spx_df(spx_df)
+        if not ok:
+            _prog.empty()
+            st.error(f"❌ SPX Parser Error: {err}")
+            st.stop()
+    except Exception as e:
+        _prog.empty()
+        st.error(f"❌ ไม่สามารถอ่าน SPX PDF: {e}")
+        st.stop()
+
+    _prog.progress(30, text=f"✅ อ่าน SPX เสร็จ ({len(spx_df)} orders) — กำลังอ่าน WMS...")
+
+    try:
+        if wms_type == "WDCS":
+            wms_file.seek(0)
+            wdcs_df = parse_wdcs_txt(wms_file.read(), transport_no=filter_value)
+            wms_file.seek(0)
+            ok2, err2 = validate_wdcs_df(wdcs_df, filter_value)
+            if not ok2:
+                _prog.empty()
+                st.error(f"❌ WDCS: {err2}")
                 st.stop()
-        except Exception as e:
-            st.error(f"❌ ไม่สามารถอ่าน SPX PDF: {e}")
-            st.stop()
-
-        wms_file.seek(0)
-        try:
-            if wms_type == "WDCS":
-                wdcs_df = parse_wdcs_txt(wms_file.read(), transport_no=filter_value)
-                ok2, err2 = validate_wdcs_df(wdcs_df, filter_value)
-                if not ok2:
-                    st.error(f"❌ WDCS: {err2}")
-                    st.stop()
-                result = reconcile_spx_wdcs(spx_df, wdcs_df, transport_no=filter_value)
+            _prog.progress(70, text=f"✅ อ่าน WDCS เสร็จ ({len(wdcs_df)} rows) — กำลัง Reconcile...")
+            result = reconcile_spx_wdcs(spx_df, wdcs_df, transport_no=filter_value)
+        else:
+            _prog.progress(40, text="📊 กำลังอ่าน FC Excel (อาจใช้เวลา 10–30 วินาที)...")
+            fc_df_full = get_cached_wms_df(wms_file, wms_type)
+            if filter_value and filter_value.strip() and "Truck Load No" in fc_df_full.columns:
+                # Filter by specific Load No
+                fc_df = fc_df_full[fc_df_full["Truck Load No"].astype(str).str.strip() == filter_value.strip()].copy()
+            elif "Truck Load No" in fc_df_full.columns:
+                # No filter — use only rows WITH a valid Truck Load No (ตัด blank TLD ออก)
+                _has_load = fc_df_full["Truck Load No"].astype(str).str.strip().replace("nan", "").ne("")
+                fc_df_with_load = fc_df_full[_has_load].copy()
+                if len(fc_df_with_load) > 0:
+                    fc_df = fc_df_with_load
+                else:
+                    # All TLD blank → fallback to full file (no filter possible)
+                    fc_df = fc_df_full.copy()
             else:
-                fc_df = parse_fc_xlsx(wms_file.read(), truck_load_no=filter_value)
-                ok2, err2 = validate_fc_df(fc_df, filter_value)
-                if not ok2:
-                    st.error(f"❌ FC: {err2}")
-                    st.stop()
-                result = reconcile_spx_fc(spx_df, fc_df, truck_load_no=filter_value)
-        except Exception as e:
-            st.error(f"❌ ไม่สามารถ Reconcile: {e}")
-            st.stop()
+                fc_df = fc_df_full.copy()
+            ok2, err2 = validate_fc_df(fc_df, filter_value)
+            if not ok2:
+                _prog.empty()
+                st.error(f"❌ FC: {err2}")
+                st.stop()
+            _prog.progress(70, text=f"✅ อ่าน FC เสร็จ ({len(fc_df)} rows) — กำลัง Reconcile...")
+            result = reconcile_spx_fc(spx_df, fc_df, truck_load_no=filter_value)
+    except Exception as e:
+        _prog.empty()
+        st.error(f"❌ ไม่สามารถ Reconcile: {e}")
+        st.stop()
 
+    _prog.progress(100, text="✅ Reconcile เสร็จสิ้น!")
+    _prog.empty()
     st.success("✅ Reconcile สำเร็จ!")
     if filter_value:
         st.info(f"🔖 **{result.filter_key}** = `{result.filter_value}`")
@@ -274,6 +309,29 @@ if run_btn and both_ready:
             st.caption(f"Match method — Tracking: {s['matched_by_tracking']} | Weborder DO: {s['matched_by_orderkey']}")
         else:
             st.caption("ℹ️ FC ไม่มี 3PL Tracking No. — จับคู่ด้วย Weborder DO อย่างเดียว")
+
+    # FC: Load No breakdown table (when no specific filter)
+    if wms_type == "FC" and not filter_value and not result.matched_df.empty:
+        if "Truck Load No" in result.matched_df.columns:
+            _load_df = result.matched_df.copy()
+            _load_df["Truck Load No"] = _load_df["Truck Load No"].astype(str).str.strip()
+            _load_df = _load_df[_load_df["Truck Load No"].replace("nan", "").ne("")]
+            if not _load_df.empty:
+                st.divider()
+                st.subheader("📦 สรุปตาม Truck Load No.")
+                _agg: dict = {"Weborder DO": "count"}
+                if "Total Box" in _load_df.columns:
+                    _load_df["Total Box"] = pd.to_numeric(_load_df["Total Box"], errors="coerce")
+                    _agg["Total Box"] = "sum"
+                _summary_tbl = _load_df.groupby("Truck Load No", sort=False).agg(_agg).reset_index()
+                _summary_tbl.columns = (
+                    ["Truck Load No", "Matched Orders", "Total Box"]
+                    if "Total Box" in _agg
+                    else ["Truck Load No", "Matched Orders"]
+                )
+                _summary_tbl = _summary_tbl.sort_values("Truck Load No", ascending=False, key=lambda s: s.astype(str))
+                st.dataframe(_summary_tbl, use_container_width=True, hide_index=True)
+
     st.divider()
 
     # ── Detail Tabs ───────────────────────────────────────────────────────────

@@ -153,7 +153,7 @@ def reconcile_spx_fc(
     fc_weborder_set = set(fc_df["Weborder DO"].dropna().str.strip().replace("", pd.NA).dropna())
 
     # ── Classify each SPX order ───────────────────────────────────────────────
-    matched_by_tracking = []   # (spx_row, match_method)
+    matched_by_tracking = []
     matched_by_orderkey = []
     missing_rows = []
 

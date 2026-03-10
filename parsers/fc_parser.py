@@ -50,6 +50,14 @@ def parse_fc_xlsx(file_bytes: bytes, truck_load_no: str = "") -> pd.DataFrame:
     if truck_load_no and truck_load_no.strip():
         if FILTER_COLUMN in df.columns:
             df = df[df[FILTER_COLUMN].astype(str).str.strip() == truck_load_no.strip()]
+    elif FILTER_COLUMN in df.columns:
+        # Sort: rows WITH Truck Load No first (latest TLD on top), blank TLD at bottom
+        _tld = df[FILTER_COLUMN].astype(str).str.strip().replace("nan", "")
+        _has_tld = _tld.ne("")
+        df = pd.concat([
+            df[_has_tld].sort_values(FILTER_COLUMN, ascending=False, key=lambda s: s.astype(str)),
+            df[~_has_tld],
+        ], ignore_index=True)
 
     return df.reset_index(drop=True)
 
