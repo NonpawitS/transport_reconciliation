@@ -71,105 +71,125 @@ both_ready = carrier_file and wms_file and carrier_type == "SPX" and wms_type in
 
 if both_ready:
     st.divider()
-    st.subheader("Step 2 — เลือก Transport / Load No.")
+    st.subheader("Step 2 — ระบุ Transport / Load No.")
 
     filter_col = "Transport_No" if wms_type == "WDCS" else "Truck Load No"
     match_col  = "Web Order"    if wms_type == "WDCS" else "Weborder DO"
     label_name = "Transport No. (WDCS)" if wms_type == "WDCS" else "Truck Load No. (FC)"
 
-    # ── Auto-detect: parse both files and find matching transports ────────────
-    cache_key = f"transport_options_{carrier_file.name}_{wms_file.name}"
-    if cache_key not in st.session_state:
-        with st.spinner("🔍 วิเคราะห์ไฟล์ — หา Transport ที่ตรงกับ Carrier..."):
-            try:
-                carrier_file.seek(0)
-                _, carrier_keys = get_carrier_keys(carrier_file.read(), carrier_type)
-                carrier_file.seek(0)
+    # ── Mode selector ─────────────────────────────────────────────────────────
+    input_mode = st.radio(
+        "วิธีระบุ Transport / Load No.",
+        options=["📷 Scan / พิมพ์เอง", "🔍 ค้นหาจาก Dropdown"],
+        horizontal=True,
+        key="input_mode",
+        help="Scan = เร็ว ไม่ต้อง analyze ไฟล์ | Dropdown = ระบบจะหา Transport ที่ตรงกับ Carrier ให้",
+    )
 
-                wms_file.seek(0)
-                wms_full_df = get_wms_df_full(wms_file.read(), wms_type)
-                wms_file.seek(0)
-
-                matches = find_matching_transports(carrier_keys, wms_full_df, filter_col, match_col)
-                st.session_state[cache_key] = matches
-                st.session_state[f"carrier_keys_{cache_key}"] = carrier_keys
-            except Exception as e:
-                st.error(f"❌ วิเคราะห์ไฟล์ไม่สำเร็จ: {e}")
-                st.session_state[cache_key] = []
-
-    matches = st.session_state.get(cache_key, [])
-
-    # ── Build option labels ───────────────────────────────────────────────────
-    # Format: "3260001318  ✅ 115 match / 115 total" or "3260001030  — 0 match / 42 total"
-    def make_label(m: dict) -> str:
-        icon = "✅" if m["match_count"] > 0 else "  "
-        return f"{m['transport_no']}  {icon} {m['match_count']} match / {m['total']} total"
-
-    all_labels = [make_label(m) for m in matches]
-    all_values = [m["transport_no"] for m in matches]
-    matched_labels = [l for l, m in zip(all_labels, matches) if m["match_count"] > 0]
-    matched_values = [v for v, m in zip(all_values, matches) if m["match_count"] > 0]
-
-    # ── Show summary banner ───────────────────────────────────────────────────
-    n_with_match = len(matched_values)
-    if n_with_match:
-        st.success(f"✅ พบ **{n_with_match}** Transport/Load ที่มี orders ตรงกับ Carrier ({len(all_values)} ทั้งหมด)")
-    else:
-        st.warning("⚠️ ไม่พบ Transport/Load ที่ตรงกับ Carrier — ตรวจสอบช่วงวันที่ของไฟล์")
-
-    # ── Barcode scan / text search ────────────────────────────────────────────
-    col_scan, col_dropdown = st.columns([2, 3])
-
-    with col_scan:
-        st.markdown("**Scan หรือพิมพ์ค้นหา** *(wildcard)*")
-        search_text = st.text_input(
+    # ── Mode A: Scan / Type ───────────────────────────────────────────────────
+    if input_mode == "📷 Scan / พิมพ์เอง":
+        filter_value = st.text_input(
             label_name,
-            key="transport_search",
-            placeholder="Scan barcode หรือพิมพ์บางส่วน เช่น 3260",
-            help="รองรับ Barcode Scanner — เมื่อ Scan แล้วกด Enter ระบบจะกรองให้อัตโนมัติ",
+            key="transport_manual",
+            placeholder="Scan barcode หรือพิมพ์ตัวเลข เช่น 3260001318",
+            help="รองรับ Barcode Scanner — Scan แล้วกด Enter",
         )
+        if filter_value:
+            st.caption(f"🔖 ใช้: **{filter_value}**")
 
-    with col_dropdown:
-        st.markdown("**เลือกจาก Dropdown** *(✅ = ตรงกับ Carrier)*")
+    # ── Mode B: Dropdown with auto-detect ────────────────────────────────────
+    else:
+        cache_key = f"transport_options_{carrier_file.name}_{wms_file.name}"
 
-        # Filter options by search text (wildcard)
-        if search_text.strip():
-            search_lower = search_text.strip().lower()
-            filtered_labels = [l for l, v in zip(all_labels, all_values) if search_lower in v.lower()]
-            filtered_values = [v for v in all_values if search_lower in v.lower()]
-        else:
-            # Show matched first, then rest
+        # Only analyze when user clicks the button (on-demand)
+        if cache_key not in st.session_state:
+            col_btn, col_note = st.columns([2, 3])
+            with col_btn:
+                if st.button("🔍 วิเคราะห์และโหลดรายการ", type="secondary", key="analyze_btn"):
+                    with st.spinner("กำลังวิเคราะห์ไฟล์ — อาจใช้เวลาสักครู่..."):
+                        try:
+                            carrier_file.seek(0)
+                            _, carrier_keys = get_carrier_keys(carrier_file.read(), carrier_type)
+                            carrier_file.seek(0)
+
+                            wms_file.seek(0)
+                            wms_full_df = get_wms_df_full(wms_file.read(), wms_type)
+                            wms_file.seek(0)
+
+                            matches = find_matching_transports(carrier_keys, wms_full_df, filter_col, match_col)
+                            st.session_state[cache_key] = matches
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ วิเคราะห์ไฟล์ไม่สำเร็จ: {e}")
+            with col_note:
+                st.caption("⚠️ ไฟล์ใหญ่อาจใช้เวลา 5–15 วินาที")
+
+        # Show dropdown only after analysis is done
+        if cache_key in st.session_state:
+            matches = st.session_state[cache_key]
+
+            def make_label(m: dict) -> str:
+                icon = "✅" if m["match_count"] > 0 else "  "
+                return f"{m['transport_no']}  {icon} {m['match_count']} match / {m['total']} total"
+
+            all_labels = [make_label(m) for m in matches]
+            all_values = [m["transport_no"] for m in matches]
+            matched_labels = [l for l, m in zip(all_labels, matches) if m["match_count"] > 0]
+            matched_values = [v for v, m in zip(all_values, matches) if m["match_count"] > 0]
             unmatched_labels = [l for l, m in zip(all_labels, matches) if m["match_count"] == 0]
             unmatched_values = [v for v, m in zip(all_values, matches) if m["match_count"] == 0]
-            filtered_labels = matched_labels + unmatched_labels
-            filtered_values = matched_values + unmatched_values
 
-        if filtered_labels:
-            # Pre-select: if search text exactly matches a value, auto-select it
-            default_idx = 0
-            if search_text.strip() and search_text.strip() in filtered_values:
-                default_idx = filtered_values.index(search_text.strip())
+            n_with_match = len(matched_values)
+            if n_with_match:
+                st.success(f"✅ พบ **{n_with_match}** Transport/Load ที่ตรงกับ Carrier (จาก {len(all_values)} ทั้งหมด)")
+            else:
+                st.warning("⚠️ ไม่พบ Transport/Load ที่ตรงกับ Carrier — ตรวจสอบช่วงวันที่ของไฟล์")
 
-            selected_label = st.selectbox(
-                "เลือก Transport / Load No.",
-                options=filtered_labels,
-                index=default_idx,
-                key="transport_select",
-                label_visibility="collapsed",
+            # Search filter (wildcard)
+            search_text = st.text_input(
+                "🔎 กรองรายการ (wildcard)",
+                key="transport_search",
+                placeholder="พิมพ์บางส่วน เช่น 3260",
             )
-            # Extract value from label (before first space)
-            filter_value = selected_label.split(" ")[0] if selected_label else ""
-        else:
-            st.warning(f"ไม่พบ '{search_text}' — ลองพิมพ์ใหม่")
-            filter_value = search_text.strip()
 
-    # Show selected info
-    if filter_value:
-        match_info = next((m for m in matches if m["transport_no"] == filter_value), None)
-        if match_info and match_info["match_count"] > 0:
-            st.info(f"🔖 เลือก: **{filter_value}** — มี {match_info['match_count']} orders ตรงกับ Carrier จาก {match_info['total']} orders ทั้งหมด")
-        else:
-            st.caption(f"🔖 เลือก: **{filter_value}**")
+            if search_text.strip():
+                s = search_text.strip().lower()
+                filtered_labels = [l for l, v in zip(all_labels, all_values) if s in v.lower()]
+                filtered_values = [v for v in all_values if s in v.lower()]
+            else:
+                # Matched first, then rest
+                filtered_labels = matched_labels + unmatched_labels
+                filtered_values = matched_values + unmatched_values
+
+            if filtered_labels:
+                default_idx = 0
+                if search_text.strip() and search_text.strip() in filtered_values:
+                    default_idx = filtered_values.index(search_text.strip())
+
+                selected_label = st.selectbox(
+                    label_name,
+                    options=filtered_labels,
+                    index=default_idx,
+                    key="transport_select",
+                    label_visibility="collapsed",
+                )
+                filter_value = selected_label.split(" ")[0] if selected_label else ""
+            else:
+                st.warning(f"ไม่พบ '{search_text}'")
+
+            if filter_value:
+                match_info = next((m for m in matches if m["transport_no"] == filter_value), None)
+                if match_info and match_info["match_count"] > 0:
+                    st.info(f"🔖 เลือก: **{filter_value}** — {match_info['match_count']} orders ตรงกับ Carrier / {match_info['total']} orders ใน Transport นี้")
+                else:
+                    st.caption(f"🔖 เลือก: **{filter_value}**")
+
+    # Clear cache button (in case files change)
+    cache_key_exists = f"transport_options_{carrier_file.name}_{wms_file.name}" in st.session_state
+    if cache_key_exists and input_mode == "🔍 ค้นหาจาก Dropdown":
+        if st.button("🔄 โหลดใหม่", key="clear_cache", help="วิเคราะห์ไฟล์ใหม่อีกครั้ง"):
+            del st.session_state[f"transport_options_{carrier_file.name}_{wms_file.name}"]
+            st.rerun()
 
 elif carrier_file and wms_file and not both_ready:
     st.divider()
