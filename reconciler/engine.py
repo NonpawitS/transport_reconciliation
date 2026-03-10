@@ -123,49 +123,103 @@ def reconcile_spx_fc(
     truck_load_no: str = "",
 ) -> ReconciliationResult:
     """
-    Carrier: SPX → key = order_sn
-    WMS:     FC  → key = Weborder DO  (primary)
-                   3PL Transport Tracking No → SPX Tracking (if available)
-    Filter:  Truck Load No
+    Carrier: SPX → tracking (TH...) and order_sn
+    WMS:     FC  → 3PL Transport Tracking No (primary, if available)
+                   Weborder DO (fallback)
+
+    Match priority per SPX row:
+      1. SPX tracking → FC 3PL Transport Tracking No  (tracking-to-tracking)
+      2. SPX order_sn → FC Weborder DO               (order-to-weborder fallback)
     """
-    spx_keys = set(spx_df["order_sn"].dropna().str.strip().replace("", pd.NA).dropna())
+    fc_cols_display = ["Weborder DO"] + [c for c in [
+        "3PL Transport Tracking No", "Brand In Article", "Total Box",
+        "Pick Qty", "Carrier", "Truck Load No",
+    ] if c in fc_df.columns]
 
-    fc_weborder = fc_df["Weborder DO"].dropna().str.strip()
-    fc_keys = set(fc_weborder[fc_weborder != ""])
+    # ── Build FC lookup sets ──────────────────────────────────────────────────
+    fc_tracking_col = "3PL Transport Tracking No"
+    fc_has_tracking = (
+        fc_tracking_col in fc_df.columns
+        and fc_df[fc_tracking_col].dropna().str.strip().replace("", pd.NA).dropna().shape[0] > 0
+    )
 
-    matched_keys = spx_keys & fc_keys
-    missing_in_wms_keys = spx_keys - fc_keys
-    extra_in_wms_keys = fc_keys - spx_keys
+    # tracking → Weborder DO (for merging results)
+    fc_tracking_to_weborder: dict[str, str] = {}
+    if fc_has_tracking:
+        tmp = fc_df[[fc_tracking_col, "Weborder DO"]].dropna(subset=[fc_tracking_col])
+        tmp = tmp[tmp[fc_tracking_col].str.strip() != ""]
+        fc_tracking_to_weborder = dict(zip(tmp[fc_tracking_col].str.strip(), tmp["Weborder DO"].str.strip()))
 
-    # FC display columns
-    fc_cols = ["Weborder DO"] + [c for c in ["Brand In Article", "Total Box", "Pick Qty",
-                                              "3PL Transport Tracking No", "Carrier", "Truck Load No"]
-                                  if c in fc_df.columns]
+    fc_weborder_set = set(fc_df["Weborder DO"].dropna().str.strip().replace("", pd.NA).dropna())
 
-    # Matched
-    matched_fc = fc_df[fc_df["Weborder DO"].isin(matched_keys)][fc_cols].copy()
-    matched_spx = spx_df[spx_df["order_sn"].isin(matched_keys)][["order_sn", "tracking"]].copy()
-    matched_spx.columns = ["Weborder DO", "SPX Tracking"]
-    matched_df = matched_fc.merge(matched_spx, on="Weborder DO", how="left")
+    # ── Classify each SPX order ───────────────────────────────────────────────
+    matched_by_tracking = []   # (spx_row, match_method)
+    matched_by_orderkey = []
+    missing_rows = []
+
+    for _, row in spx_df.iterrows():
+        tracking = str(row.get("tracking", "") or "").strip()
+        order_sn = str(row.get("order_sn", "") or "").strip()
+
+        if fc_has_tracking and tracking and tracking in fc_tracking_to_weborder:
+            matched_by_tracking.append(row)
+        elif order_sn and order_sn in fc_weborder_set:
+            matched_by_orderkey.append(row)
+        else:
+            missing_rows.append(row)
+
+    matched_spx_df = pd.DataFrame(matched_by_tracking + matched_by_orderkey)
+    missing_spx_df = pd.DataFrame(missing_rows)
+
+    # ── Build matched_df ──────────────────────────────────────────────────────
+    matched_weborders: set[str] = set()
+
+    # From tracking matches → get their weborder_do
+    tracking_weborders = {fc_tracking_to_weborder[r["tracking"]]
+                          for r in matched_by_tracking
+                          if r["tracking"] in fc_tracking_to_weborder}
+    # From order_sn matches
+    orderkey_weborders = {r["order_sn"] for r in matched_by_orderkey}
+
+    matched_weborders = tracking_weborders | orderkey_weborders
+
+    matched_fc = fc_df[fc_df["Weborder DO"].isin(matched_weborders)][fc_cols_display].copy()
+
+    # Merge SPX info
+    spx_for_merge = matched_spx_df[["order_sn", "tracking"]].copy() if not matched_spx_df.empty else pd.DataFrame(columns=["order_sn", "tracking"])
+    spx_for_merge = spx_for_merge.rename(columns={"order_sn": "Weborder DO", "tracking": "SPX Tracking"})
+    matched_df = matched_fc.merge(spx_for_merge, on="Weborder DO", how="left")
+    matched_df.insert(0, "Match Method",
+                      matched_df["Weborder DO"].apply(
+                          lambda w: "Tracking" if w in tracking_weborders else "Weborder DO"
+                      ))
     matched_df.insert(0, "Status", "Matched ✅")
 
-    # Missing in WMS
-    miss_wms_df = spx_df[spx_df["order_sn"].isin(missing_in_wms_keys)][["order_sn", "tracking", "pickup_time"]].copy()
-    miss_wms_df.columns = ["Order SN (SPX)", "SPX Tracking", "Pickup Time"]
-    miss_wms_df.insert(0, "Status", "Missing in WMS ⚠️")
+    # ── Missing in WMS ────────────────────────────────────────────────────────
+    if missing_spx_df.empty:
+        miss_wms_df = pd.DataFrame(columns=["Status", "Order SN (SPX)", "SPX Tracking", "Pickup Time"])
+    else:
+        miss_wms_df = missing_spx_df[["order_sn", "tracking", "pickup_time"]].copy()
+        miss_wms_df.columns = ["Order SN (SPX)", "SPX Tracking", "Pickup Time"]
+        miss_wms_df.insert(0, "Status", "Missing in WMS ⚠️")
 
-    # Extra in WMS
-    extra_wms_df = fc_df[fc_df["Weborder DO"].isin(extra_in_wms_keys)][fc_cols].copy()
+    # ── Extra in WMS (FC orders not picked by any SPX row) ────────────────────
+    extra_weborders = fc_weborder_set - matched_weborders
+    extra_wms_df = fc_df[fc_df["Weborder DO"].isin(extra_weborders)][fc_cols_display].copy()
     extra_wms_df.insert(0, "Status", "Extra in WMS ⚠️")
 
-    total_carrier = len(spx_keys)
+    total_carrier = len(spx_df)
+    n_matched = len(matched_by_tracking) + len(matched_by_orderkey)
     summary = {
         "carrier_total": total_carrier,
-        "wms_total": len(fc_keys),
-        "matched": len(matched_keys),
-        "missing_in_wms": len(missing_in_wms_keys),
-        "extra_in_wms": len(extra_in_wms_keys),
-        "match_rate": round(len(matched_keys) / total_carrier * 100, 1) if total_carrier else 0,
+        "wms_total": len(fc_weborder_set),
+        "matched": n_matched,
+        "matched_by_tracking": len(matched_by_tracking),
+        "matched_by_orderkey": len(matched_by_orderkey),
+        "missing_in_wms": len(missing_rows),
+        "extra_in_wms": len(extra_weborders),
+        "match_rate": round(n_matched / total_carrier * 100, 1) if total_carrier else 0,
+        "fc_has_tracking": fc_has_tracking,
     }
 
     return ReconciliationResult(
