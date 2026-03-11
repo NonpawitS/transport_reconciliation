@@ -292,3 +292,165 @@ def reconcile_spx_fc(
         filter_key="Truck Load No.",
         filter_value=truck_load_no,
     )
+
+
+# ─── SPX + TLD Report ────────────────────────────────────────────────────────
+
+def reconcile_spx_tld(
+    spx_df: pd.DataFrame,
+    tld_df: pd.DataFrame,
+    tld_no: str = "",
+) -> "ReconciliationResult":
+    """
+    Carrier: SPX  → tracking (TH...) and order_sn
+    WMS:     TLD Report → Tracking Number (primary), Order No segment (fallback)
+
+    TLD row key = "Order No" (e.g. "CMGSHP168415662-260310RNDX7YBB-01")
+    Match priority per SPX row:
+      1. SPX tracking == TLD Tracking Number
+      2. SPX order_sn found as segment inside TLD Order No
+    """
+    tld_tracking_col = "Tracking Number"
+    tld_order_col    = "Order No"
+
+    tld_cols_display = [tld_order_col] + [c for c in [
+        "Tracking Number", "Brand No", "Pallet No", "Carton No", "Handover date&time",
+    ] if c in tld_df.columns]
+
+    # ── tracking → Order No lookup ────────────────────────────────────────────
+    tld_tracking_to_order_no: dict[str, str] = {}
+    if tld_tracking_col in tld_df.columns and tld_order_col in tld_df.columns:
+        tmp = tld_df[[tld_tracking_col, tld_order_col]].dropna(subset=[tld_tracking_col, tld_order_col])
+        tmp = tmp[tmp[tld_tracking_col].astype(str).str.strip().ne("")]
+        for _, r in tmp.iterrows():
+            trk = str(r[tld_tracking_col]).strip()
+            ono = str(r[tld_order_col]).strip()
+            if trk and trk != "nan" and ono and ono != "nan":
+                tld_tracking_to_order_no[trk] = ono
+
+    # ── orderkey (shopee SN segment) → Order No lookup ────────────────────────
+    tld_orderkey_to_order_no: dict[str, str] = {}
+
+    def _index_tld_order(order_str: str, order_no_key: str) -> None:
+        s = str(order_str).strip()
+        if not s or s == "nan":
+            return
+        if s not in tld_orderkey_to_order_no:
+            tld_orderkey_to_order_no[s] = order_no_key
+        for part in s.split("-"):
+            p = part.strip()
+            if p and p != "nan" and len(p) >= 6 and p not in tld_orderkey_to_order_no:
+                tld_orderkey_to_order_no[p] = order_no_key
+
+    if tld_order_col in tld_df.columns:
+        for order_no in tld_df[tld_order_col].dropna():
+            ono = str(order_no).strip()
+            if ono and ono != "nan":
+                _index_tld_order(ono, ono)
+
+    # ── Classify each SPX order ───────────────────────────────────────────────
+    matched_by_tracking = []
+    matched_by_orderkey = []
+    missing_rows = []
+
+    for _, row in spx_df.iterrows():
+        tracking  = str(row.get("tracking",  "") or "").strip()
+        order_sn  = str(row.get("order_sn",  "") or "").strip()
+
+        if tracking and tracking in tld_tracking_to_order_no:
+            matched_by_tracking.append(row)
+        elif order_sn and order_sn in tld_orderkey_to_order_no:
+            matched_by_orderkey.append(row)
+        else:
+            missing_rows.append(row)
+
+    # ── Collect matched TLD Order No values ───────────────────────────────────
+    tracking_order_nos = {
+        tld_tracking_to_order_no[str(r["tracking"]).strip()]
+        for r in matched_by_tracking
+        if str(r["tracking"]).strip() in tld_tracking_to_order_no
+    }
+    orderkey_order_nos = {
+        tld_orderkey_to_order_no[str(r["order_sn"]).strip()]
+        for r in matched_by_orderkey
+        if str(r["order_sn"]).strip() in tld_orderkey_to_order_no
+    }
+    matched_order_nos = tracking_order_nos | orderkey_order_nos
+
+    # ── Build matched_df ──────────────────────────────────────────────────────
+    if tld_order_col in tld_df.columns and matched_order_nos:
+        matched_tld = tld_df[tld_df[tld_order_col].isin(matched_order_nos)][tld_cols_display].copy()
+    else:
+        matched_tld = pd.DataFrame(columns=tld_cols_display)
+
+    spx_merge_rows = []
+    for r in matched_by_tracking:
+        trk = str(r["tracking"]).strip()
+        ono = tld_tracking_to_order_no.get(trk, "")
+        if ono:
+            spx_merge_rows.append({tld_order_col: ono, "SPX Tracking": trk, "SPX Order SN": str(r["order_sn"]).strip()})
+    for r in matched_by_orderkey:
+        osn = str(r["order_sn"]).strip()
+        ono = tld_orderkey_to_order_no.get(osn, "")
+        if ono:
+            spx_merge_rows.append({tld_order_col: ono, "SPX Tracking": str(r["tracking"]).strip(), "SPX Order SN": osn})
+
+    spx_merge_df = (
+        pd.DataFrame(spx_merge_rows)
+        if spx_merge_rows
+        else pd.DataFrame(columns=[tld_order_col, "SPX Tracking", "SPX Order SN"])
+    )
+    if not matched_tld.empty:
+        matched_df = matched_tld.merge(spx_merge_df, on=tld_order_col, how="left")
+        matched_df.insert(0, "Match Method",
+                          matched_df[tld_order_col].apply(
+                              lambda o: "Tracking" if o in tracking_order_nos else "Order SN"
+                          ))
+        matched_df.insert(0, "Status", "Matched ✅")
+    else:
+        matched_df = pd.DataFrame()
+
+    # ── Missing in WMS ────────────────────────────────────────────────────────
+    if missing_rows:
+        miss_wms_df = pd.DataFrame(missing_rows)[["order_sn", "tracking", "pickup_time"]].copy()
+        miss_wms_df.columns = ["Order SN (SPX)", "SPX Tracking", "Pickup Time"]
+        miss_wms_df.insert(0, "Status", "Missing in WMS ⚠️")
+    else:
+        miss_wms_df = pd.DataFrame(columns=["Status", "Order SN (SPX)", "SPX Tracking", "Pickup Time"])
+
+    # ── Extra in WMS (TLD orders not matched by any SPX) ─────────────────────
+    if tld_order_col in tld_df.columns:
+        tld_all_order_nos = set(tld_df[tld_order_col].dropna().astype(str).str.strip()) - {"", "nan"}
+    else:
+        tld_all_order_nos = set()
+
+    extra_order_nos = tld_all_order_nos - matched_order_nos
+    if tld_order_col in tld_df.columns and extra_order_nos:
+        extra_wms_df = tld_df[tld_df[tld_order_col].isin(extra_order_nos)][tld_cols_display].copy()
+        extra_wms_df.insert(0, "Status", "Extra in WMS ⚠️")
+    else:
+        extra_wms_df = pd.DataFrame()
+
+    total_carrier = len(spx_df)
+    n_matched = len(matched_by_tracking) + len(matched_by_orderkey)
+    summary = {
+        "carrier_total": total_carrier,
+        "wms_total": len(tld_all_order_nos),
+        "matched": n_matched,
+        "matched_by_tracking": len(matched_by_tracking),
+        "matched_by_orderkey": len(matched_by_orderkey),
+        "missing_in_wms": len(missing_rows),
+        "extra_in_wms": len(extra_order_nos),
+        "match_rate": round(n_matched / total_carrier * 100, 1) if total_carrier else 0,
+    }
+
+    return ReconciliationResult(
+        summary=summary,
+        matched_df=matched_df,
+        missing_in_wms_df=miss_wms_df,
+        extra_in_wms_df=extra_wms_df,
+        carrier_type="SPX",
+        wms_type="TLD",
+        filter_key="Truck Load No.",
+        filter_value=tld_no,
+    )
