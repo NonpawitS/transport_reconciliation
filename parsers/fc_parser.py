@@ -8,7 +8,7 @@ import io
 import pandas as pd
 
 FILTER_COLUMN = "Truck Load No"
-REQUIRED_COLUMNS = ["Weborder DO"]
+REQUIRED_COLUMNS = ["Order no"]
 KEY_COLUMNS = [
     "Truck Load No",
     "Weborder DO",
@@ -19,6 +19,9 @@ KEY_COLUMNS = [
     "Pick Qty",
     "Carrier",
     "Sold To Name",
+    "Document Type Name",
+    "Group Order Type",
+    "SO (SAP)",
 ]
 
 
@@ -41,10 +44,14 @@ def parse_fc_xlsx(file_bytes: bytes, truck_load_no: str = "") -> pd.DataFrame:
     existing_cols = [c for c in KEY_COLUMNS if c in df.columns]
     df = df[existing_cols].copy()
 
-    # Clean Weborder DO
+    # Keep rows that have Order no (primary row identifier for all carriers)
+    if "Order no" in df.columns:
+        df["Order no"] = df["Order no"].astype(str).str.strip()
+        df = df[df["Order no"].notna() & (df["Order no"] != "") & (df["Order no"] != "nan")]
+
+    # Clean Weborder DO (optional — may be blank for 3PL orders like SPX)
     if "Weborder DO" in df.columns:
-        df["Weborder DO"] = df["Weborder DO"].astype(str).str.strip()
-        df = df[df["Weborder DO"].notna() & (df["Weborder DO"] != "") & (df["Weborder DO"] != "nan")]
+        df["Weborder DO"] = df["Weborder DO"].astype(str).str.strip().replace("nan", "")
 
     # Filter by Truck Load No if provided
     if truck_load_no and truck_load_no.strip():

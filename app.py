@@ -10,6 +10,11 @@ from parsers.spx_parser import parse_spx_pdf, validate_spx_df
 from parsers.wdcs_parser import parse_wdcs_txt, validate_wdcs_df
 from parsers.fc_parser import parse_fc_xlsx, validate_fc_df
 from reconciler.engine import reconcile_spx_wdcs, reconcile_spx_fc, find_matching_transports
+from ai.gemini_client import (
+    is_available as ai_available,
+    generate_summary_report, explain_missing,
+    detect_anomalies, fuzzy_match_hint,
+)
 
 # ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Dispatch Reconciliation", page_icon="📦", layout="wide")
@@ -94,17 +99,115 @@ if both_ready:
     match_col  = "Web Order"    if wms_type == "WDCS" else "Weborder DO"
     label_name = "Transport No. (WDCS)" if wms_type == "WDCS" else "Truck Load No. (FC)"
 
-    # ── FC: always skip Truck Load No filter (read lazily on demand) ─────────
+    # ── FC: mode selector (Scan / Dropdown / ทั้งไฟล์) ──────────────────────
     if wms_type == "FC":
-        st.info(
-            "ℹ️ FC — ระบุ **Truck Load No.** (ถ้ามี) หรือข้ามเพื่อ Reconcile ทั้งไฟล์ "
-            "(จับคู่ด้วย **3PL Tracking No.** ก่อน แล้ว Fallback ด้วย **Weborder DO**)"
+        input_mode_fc = st.radio(
+            "วิธีระบุ Truck Load No.",
+            options=["📷 Scan / พิมพ์เอง", "🔍 ค้นหาจาก Dropdown", "📦 ทั้งไฟล์ (ไม่ Filter)"],
+            horizontal=True,
+            key="input_mode_fc",
+            help="Scan = เร็ว | Dropdown = ระบบโหลดรายการ TLD จากไฟล์ | ทั้งไฟล์ = Reconcile ทุก order",
         )
-        filter_value = st.text_input(
-            "Truck Load No. (FC) — ไม่บังคับ",
-            key="transport_manual_fc",
-            placeholder="ระบุถ้ามี หรือเว้นว่างเพื่อใช้ทั้งไฟล์",
-        )
+
+        if input_mode_fc == "📷 Scan / พิมพ์เอง":
+            filter_value = st.text_input(
+                "Truck Load No. (FC)",
+                key="transport_manual_fc",
+                placeholder="Scan barcode หรือพิมพ์ เช่น TLD2603001522",
+            )
+            if filter_value:
+                st.caption(f"🔖 ใช้: **{filter_value}**")
+
+        elif input_mode_fc == "🔍 ค้นหาจาก Dropdown":
+            fc_tld_cache_key = f"fc_tld_list_{wms_file.name}_{wms_file.size}"
+            if fc_tld_cache_key not in st.session_state:
+                col_btn, col_note = st.columns([2, 3])
+                with col_btn:
+                    if st.button("🔍 โหลดรายการ Truck Load No.", type="secondary", key="fc_load_btn"):
+                        with st.spinner("กำลังอ่านไฟล์..."):
+                            try:
+                                from parsers.fc_parser import get_fc_load_numbers
+                                wms_file.seek(0)
+                                tld_list = get_fc_load_numbers(wms_file.read())
+                                wms_file.seek(0)
+                                st.session_state[fc_tld_cache_key] = tld_list
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ โหลดไม่สำเร็จ: {e}")
+                with col_note:
+                    st.caption("⚠️ ไฟล์ใหญ่อาจใช้เวลา 5–15 วินาที")
+            if fc_tld_cache_key in st.session_state:
+                tld_list = st.session_state[fc_tld_cache_key]
+                if tld_list:
+                    st.success(f"✅ พบ **{len(tld_list)}** Truck Load No. ในไฟล์")
+                    search_tld = st.text_input("🔎 กรองรายการ", key="fc_tld_search", placeholder="พิมพ์บางส่วน เช่น TLD2603")
+                    filtered_tld = (
+                        [t for t in tld_list if search_tld.strip().lower() in t.lower()]
+                        if search_tld.strip() else tld_list
+                    )
+                    if filtered_tld:
+                        selected_tld = st.selectbox("Truck Load No.", options=filtered_tld, key="fc_tld_select", label_visibility="collapsed")
+                        filter_value = selected_tld or ""
+                        if filter_value:
+                            st.caption(f"🔖 เลือก: **{filter_value}**")
+                    else:
+                        st.warning(f"ไม่พบ TLD ที่มี '{search_tld}'")
+                    if st.button("🔄 โหลดใหม่", key="fc_tld_refresh"):
+                        del st.session_state[fc_tld_cache_key]
+                        st.rerun()
+                else:
+                    st.warning("⚠️ ไม่พบ Truck Load No. ในไฟล์ — จะ Reconcile ทั้งไฟล์")
+
+        else:  # ทั้งไฟล์
+            filter_value = ""
+            st.caption("📦 Reconcile ทั้งไฟล์ — จับคู่ด้วย 3PL Tracking No. และ Order no")
+
+        # ── FC Inspect (debug) ────────────────────────────────────────────────
+        with st.expander("🔬 ตรวจสอบไฟล์ FC (debug)"):
+            if st.button("วิเคราะห์ไฟล์ FC", key="fc_inspect"):
+                with st.spinner("กำลังอ่าน..."):
+                    wms_file.seek(0)
+                    import io as _io, pandas as _pd
+                    _raw = _pd.read_excel(_io.BytesIO(wms_file.read()), header=1, dtype=str, nrows=10)
+                    wms_file.seek(0)
+                    _raw.columns = [str(c).strip() for c in _raw.columns]
+                    fc_full = get_cached_wms_df(wms_file, wms_type)
+
+                # ── Raw columns (ALL, not just KEY_COLUMNS) ───────────────────
+                st.markdown("**📋 Raw column ทั้งหมด (row 2 header):**")
+                st.write(list(_raw.columns))
+
+                # ── Parsed df stats ──────────────────────────────────────────
+                st.write(f"**Rows parsed (KEY_COLUMNS only):** {len(fc_full)}")
+                if "Weborder DO" in fc_full.columns:
+                    _wo = fc_full["Weborder DO"].dropna()
+                    st.write(f"**Weborder DO non-null:** {len(_wo)} | Sample: {_wo.head(3).tolist()}")
+                else:
+                    st.error("❌ ไม่พบ column 'Weborder DO'")
+                if "Order no" in fc_full.columns:
+                    _on = fc_full["Order no"].dropna().str.strip().replace("", _pd.NA).dropna()
+                    st.write(f"**Order no non-null:** {len(_on)} | Sample (first 3): {_on.head(3).tolist()}")
+                    # Search for CMGSHP pattern
+                    _cmg = _on[_on.str.contains("CMGSHP", na=False)]
+                    st.write(f"**Order no ที่มี 'CMGSHP':** {len(_cmg)} rows | Sample: {_cmg.head(3).tolist()}")
+                    # Carrier column breakdown
+                if "Carrier" in fc_full.columns:
+                    _car = fc_full["Carrier"].dropna().str.strip().replace("", _pd.NA).dropna()
+                    st.write(f"**Carrier unique:** {_car.unique().tolist()[:10]}")
+                if "Document Type Name" in fc_full.columns:
+                    _dt = fc_full["Document Type Name"].dropna().str.strip().replace("", _pd.NA).dropna()
+                    _dt_counts = _dt.value_counts().head(10)
+                    st.write(f"**Document Type Name unique ({len(_dt_counts)} types):**")
+                    st.dataframe(_dt_counts.reset_index(), use_container_width=True, hide_index=True)
+                if "Group Order Type" in fc_full.columns:
+                    _got = fc_full["Group Order Type"].dropna().str.strip().replace("", _pd.NA).dropna()
+                    st.write(f"**Group Order Type unique:** {_got.unique().tolist()[:10]}")
+                if "3PL Transport Tracking No" in fc_full.columns:
+                    _trk = fc_full["3PL Transport Tracking No"].dropna().str.strip().replace("", _pd.NA).dropna()
+                    st.write(f"**3PL Tracking non-null:** {len(_trk)} | Sample: {_trk.head(3).tolist()}")
+                if "Truck Load No" in fc_full.columns:
+                    _tld = fc_full["Truck Load No"].dropna().str.strip().replace("", _pd.NA).dropna()
+                    st.write(f"**Truck Load No non-null:** {len(_tld)} | Sample: {_tld.head(3).tolist()}")
     else:
         # ── Mode selector ─────────────────────────────────────────────────────
         input_mode = st.radio(
@@ -256,16 +359,8 @@ if run_btn and both_ready:
             if filter_value and filter_value.strip() and "Truck Load No" in fc_df_full.columns:
                 # Filter by specific Load No
                 fc_df = fc_df_full[fc_df_full["Truck Load No"].astype(str).str.strip() == filter_value.strip()].copy()
-            elif "Truck Load No" in fc_df_full.columns:
-                # No filter — use only rows WITH a valid Truck Load No (ตัด blank TLD ออก)
-                _has_load = fc_df_full["Truck Load No"].astype(str).str.strip().replace("nan", "").ne("")
-                fc_df_with_load = fc_df_full[_has_load].copy()
-                if len(fc_df_with_load) > 0:
-                    fc_df = fc_df_with_load
-                else:
-                    # All TLD blank → fallback to full file (no filter possible)
-                    fc_df = fc_df_full.copy()
             else:
+                # No TLD filter — use full file (match by tracking / order key)
                 fc_df = fc_df_full.copy()
             ok2, err2 = validate_fc_df(fc_df, filter_value)
             if not ok2:
@@ -372,6 +467,44 @@ if run_btn and both_ready:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
+
+    # ── AI Analysis ───────────────────────────────────────────────────────────
+    if ai_available():
+        st.divider()
+        st.subheader("🤖 AI Analysis (Gemini Flash)")
+        ai_tab1, ai_tab2, ai_tab3, ai_tab4 = st.tabs([
+            "📋 Summary Report", "❓ Explain Missing", "🔍 Anomaly Detect", "🔗 Fuzzy Match"
+        ])
+
+        with ai_tab1:
+            if st.button("สรุปผลภาษาไทย", key="ai_summary"):
+                with st.spinner("Gemini กำลังวิเคราะห์..."):
+                    out = generate_summary_report(s, result.carrier_type, result.wms_type, filter_value)
+                st.markdown(out)
+
+        with ai_tab2:
+            if st.button("อธิบาย Missing Orders", key="ai_explain", disabled=result.missing_in_wms_df.empty):
+                with st.spinner("Gemini กำลังวิเคราะห์..."):
+                    out = explain_missing(result.missing_in_wms_df, result.carrier_type, result.wms_type)
+                st.markdown(out)
+            if result.missing_in_wms_df.empty:
+                st.success("🎉 ไม่มี Missing orders")
+
+        with ai_tab3:
+            if st.button("ตรวจหา Anomaly", key="ai_anomaly"):
+                with st.spinner("Gemini กำลังวิเคราะห์..."):
+                    out = detect_anomalies(result.missing_in_wms_df, result.extra_in_wms_df, result.matched_df)
+                st.markdown(out)
+
+        with ai_tab4:
+            st.caption("จับคู่ orders ที่ format อาจต่างกันเล็กน้อย")
+            if st.button("Fuzzy Match", key="ai_fuzzy",
+                         disabled=result.missing_in_wms_df.empty or result.extra_in_wms_df.empty):
+                with st.spinner("Gemini กำลังวิเคราะห์..."):
+                    out = fuzzy_match_hint(result.missing_in_wms_df, result.extra_in_wms_df)
+                st.markdown(out)
+            if result.missing_in_wms_df.empty or result.extra_in_wms_df.empty:
+                st.info("ต้องมีทั้ง Missing และ Extra orders จึงจะ Fuzzy Match ได้")
 
 elif not carrier_file and not wms_file:
     st.markdown("""

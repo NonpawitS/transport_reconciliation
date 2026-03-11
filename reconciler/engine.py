@@ -124,33 +124,62 @@ def reconcile_spx_fc(
 ) -> ReconciliationResult:
     """
     Carrier: SPX → tracking (TH...) and order_sn
-    WMS:     FC  → 3PL Transport Tracking No (primary, if available)
-                   Weborder DO (fallback)
+    WMS:     FC  → 3PL Transport Tracking No (primary)
+                   Order no segment fallback (SPX rows have no Weborder DO)
 
+    FC row key = "Order no" (e.g. "CMGSHP306727483-260309NSTNP61R-01")
     Match priority per SPX row:
-      1. SPX tracking → FC 3PL Transport Tracking No  (tracking-to-tracking)
-      2. SPX order_sn → FC Weborder DO               (order-to-weborder fallback)
+      1. SPX tracking == FC 3PL Transport Tracking No
+      2. SPX order_sn found as segment inside FC Order no
     """
-    fc_cols_display = ["Weborder DO"] + [c for c in [
-        "3PL Transport Tracking No", "Brand In Article", "Total Box",
-        "Pick Qty", "Carrier", "Truck Load No",
+    fc_order_col = "Order no"
+    fc_tracking_col = "3PL Transport Tracking No"
+
+    fc_cols_display = [fc_order_col] + [c for c in [
+        "Weborder DO", "3PL Transport Tracking No", "Brand In Article",
+        "Total Box", "Pick Qty", "Carrier", "Truck Load No",
     ] if c in fc_df.columns]
 
-    # ── Build FC lookup sets ──────────────────────────────────────────────────
-    fc_tracking_col = "3PL Transport Tracking No"
+    # ── Check if FC has 3PL tracking data ────────────────────────────────────
     fc_has_tracking = (
         fc_tracking_col in fc_df.columns
         and fc_df[fc_tracking_col].dropna().str.strip().replace("", pd.NA).dropna().shape[0] > 0
     )
 
-    # tracking → Weborder DO (for merging results)
-    fc_tracking_to_weborder: dict[str, str] = {}
-    if fc_has_tracking:
-        tmp = fc_df[[fc_tracking_col, "Weborder DO"]].dropna(subset=[fc_tracking_col])
-        tmp = tmp[tmp[fc_tracking_col].str.strip() != ""]
-        fc_tracking_to_weborder = dict(zip(tmp[fc_tracking_col].str.strip(), tmp["Weborder DO"].str.strip()))
+    # ── tracking → Order no ───────────────────────────────────────────────────
+    fc_tracking_to_order_no: dict[str, str] = {}
+    if fc_has_tracking and fc_order_col in fc_df.columns:
+        tmp = fc_df[[fc_tracking_col, fc_order_col]].dropna(subset=[fc_tracking_col, fc_order_col])
+        tmp = tmp[tmp[fc_tracking_col].astype(str).str.strip().ne("")]
+        for _, r in tmp.iterrows():
+            trk = str(r[fc_tracking_col]).strip()
+            ono = str(r[fc_order_col]).strip()
+            if trk and trk != "nan" and ono and ono != "nan":
+                fc_tracking_to_order_no[trk] = ono
+        fc_tracking_to_order_no.pop("nan", None)
+        fc_tracking_to_order_no.pop("", None)
 
-    fc_weborder_set = set(fc_df["Weborder DO"].dropna().str.strip().replace("", pd.NA).dropna())
+    # ── orderkey (shopee SN segment) → Order no ───────────────────────────────
+    # FC Order no = "CMGSHP{numeric}-{shopee_SN}-{seq}"
+    # Extract each '-'-separated segment ≥6 chars as a lookup key
+    fc_orderkey_to_order_no: dict[str, str] = {}
+
+    def _index_order_string(order_str: str, order_no_key: str) -> None:
+        s = str(order_str).strip()
+        if not s or s == "nan":
+            return
+        if s not in fc_orderkey_to_order_no:
+            fc_orderkey_to_order_no[s] = order_no_key
+        for part in s.split("-"):
+            p = part.strip()
+            if p and p != "nan" and len(p) >= 6 and p not in fc_orderkey_to_order_no:
+                fc_orderkey_to_order_no[p] = order_no_key
+
+    if fc_order_col in fc_df.columns:
+        for order_no in fc_df[fc_order_col].dropna():
+            ono = str(order_no).strip()
+            if ono and ono != "nan":
+                _index_order_string(ono, ono)
 
     # ── Classify each SPX order ───────────────────────────────────────────────
     matched_by_tracking = []
@@ -161,63 +190,92 @@ def reconcile_spx_fc(
         tracking = str(row.get("tracking", "") or "").strip()
         order_sn = str(row.get("order_sn", "") or "").strip()
 
-        if fc_has_tracking and tracking and tracking in fc_tracking_to_weborder:
+        if fc_has_tracking and tracking and tracking in fc_tracking_to_order_no:
             matched_by_tracking.append(row)
-        elif order_sn and order_sn in fc_weborder_set:
+        elif order_sn and order_sn in fc_orderkey_to_order_no:
             matched_by_orderkey.append(row)
         else:
             missing_rows.append(row)
 
-    matched_spx_df = pd.DataFrame(matched_by_tracking + matched_by_orderkey)
-    missing_spx_df = pd.DataFrame(missing_rows)
+    # ── Collect matched FC Order no values ───────────────────────────────────
+    tracking_order_nos = {
+        fc_tracking_to_order_no[str(r["tracking"]).strip()]
+        for r in matched_by_tracking
+        if str(r["tracking"]).strip() in fc_tracking_to_order_no
+    }
+    orderkey_order_nos = {
+        fc_orderkey_to_order_no[str(r["order_sn"]).strip()]
+        for r in matched_by_orderkey
+        if str(r["order_sn"]).strip() in fc_orderkey_to_order_no
+    }
+    matched_order_nos = tracking_order_nos | orderkey_order_nos
 
     # ── Build matched_df ──────────────────────────────────────────────────────
-    matched_weborders: set[str] = set()
+    if fc_order_col in fc_df.columns and matched_order_nos:
+        matched_fc = fc_df[fc_df[fc_order_col].isin(matched_order_nos)][fc_cols_display].copy()
+    else:
+        matched_fc = pd.DataFrame(columns=fc_cols_display)
 
-    # From tracking matches → get their weborder_do
-    tracking_weborders = {fc_tracking_to_weborder[r["tracking"]]
-                          for r in matched_by_tracking
-                          if r["tracking"] in fc_tracking_to_weborder}
-    # From order_sn matches
-    orderkey_weborders = {r["order_sn"] for r in matched_by_orderkey}
+    spx_merge_rows = []
+    for r in matched_by_tracking:
+        trk = str(r["tracking"]).strip()
+        ono = fc_tracking_to_order_no.get(trk, "")
+        if ono:
+            spx_merge_rows.append({fc_order_col: ono, "SPX Tracking": trk, "SPX Order SN": str(r["order_sn"]).strip()})
+    for r in matched_by_orderkey:
+        osn = str(r["order_sn"]).strip()
+        ono = fc_orderkey_to_order_no.get(osn, "")
+        if ono:
+            spx_merge_rows.append({fc_order_col: ono, "SPX Tracking": str(r["tracking"]).strip(), "SPX Order SN": osn})
 
-    matched_weborders = tracking_weborders | orderkey_weborders
-
-    matched_fc = fc_df[fc_df["Weborder DO"].isin(matched_weborders)][fc_cols_display].copy()
-
-    # Merge SPX info
-    spx_for_merge = matched_spx_df[["order_sn", "tracking"]].copy() if not matched_spx_df.empty else pd.DataFrame(columns=["order_sn", "tracking"])
-    spx_for_merge = spx_for_merge.rename(columns={"order_sn": "Weborder DO", "tracking": "SPX Tracking"})
-    matched_df = matched_fc.merge(spx_for_merge, on="Weborder DO", how="left")
-    matched_df.insert(0, "Match Method",
-                      matched_df["Weborder DO"].apply(
-                          lambda w: "Tracking" if w in tracking_weborders else "Weborder DO"
-                      ))
-    matched_df.insert(0, "Status", "Matched ✅")
+    spx_merge_df = (
+        pd.DataFrame(spx_merge_rows)
+        if spx_merge_rows
+        else pd.DataFrame(columns=[fc_order_col, "SPX Tracking", "SPX Order SN"])
+    )
+    if not matched_fc.empty:
+        matched_df = matched_fc.merge(spx_merge_df, on=fc_order_col, how="left")
+        matched_df.insert(0, "Match Method",
+                          matched_df[fc_order_col].apply(
+                              lambda o: "Tracking" if o in tracking_order_nos else "Order SN"
+                          ))
+        matched_df.insert(0, "Status", "Matched ✅")
+    else:
+        matched_df = pd.DataFrame()
 
     # ── Missing in WMS ────────────────────────────────────────────────────────
-    if missing_spx_df.empty:
-        miss_wms_df = pd.DataFrame(columns=["Status", "Order SN (SPX)", "SPX Tracking", "Pickup Time"])
-    else:
-        miss_wms_df = missing_spx_df[["order_sn", "tracking", "pickup_time"]].copy()
+    if missing_rows:
+        miss_wms_df = pd.DataFrame(missing_rows)[["order_sn", "tracking", "pickup_time"]].copy()
         miss_wms_df.columns = ["Order SN (SPX)", "SPX Tracking", "Pickup Time"]
         miss_wms_df.insert(0, "Status", "Missing in WMS ⚠️")
+    else:
+        miss_wms_df = pd.DataFrame(columns=["Status", "Order SN (SPX)", "SPX Tracking", "Pickup Time"])
 
-    # ── Extra in WMS (FC orders not picked by any SPX row) ────────────────────
-    extra_weborders = fc_weborder_set - matched_weborders
-    extra_wms_df = fc_df[fc_df["Weborder DO"].isin(extra_weborders)][fc_cols_display].copy()
-    extra_wms_df.insert(0, "Status", "Extra in WMS ⚠️")
+    # ── Extra in WMS (FC orders not matched by any SPX) ───────────────────────
+    if fc_order_col in fc_df.columns:
+        fc_all_order_nos = (
+            set(fc_df[fc_order_col].dropna().astype(str).str.strip()) - {"", "nan"}
+        )
+    else:
+        fc_all_order_nos = set()
+
+    extra_order_nos = fc_all_order_nos - matched_order_nos
+    if fc_order_col in fc_df.columns and extra_order_nos:
+        extra_wms_df = fc_df[fc_df[fc_order_col].isin(extra_order_nos)][fc_cols_display].copy()
+        extra_wms_df.insert(0, "Status", "Extra in WMS ⚠️")
+    else:
+        extra_wms_df = pd.DataFrame()
 
     total_carrier = len(spx_df)
     n_matched = len(matched_by_tracking) + len(matched_by_orderkey)
     summary = {
         "carrier_total": total_carrier,
-        "wms_total": len(fc_weborder_set),
+        "wms_total": len(fc_all_order_nos),
         "matched": n_matched,
         "matched_by_tracking": len(matched_by_tracking),
         "matched_by_orderkey": len(matched_by_orderkey),
         "missing_in_wms": len(missing_rows),
-        "extra_in_wms": len(extra_weborders),
+        "extra_in_wms": len(extra_order_nos),
         "match_rate": round(n_matched / total_carrier * 100, 1) if total_carrier else 0,
         "fc_has_tracking": fc_has_tracking,
     }
