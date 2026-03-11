@@ -75,7 +75,9 @@ def reconcile_spx_wdcs(
     extra_in_wms_keys = wdcs_keys - spx_keys          # WMS released, Carrier didn't pick
 
     # WMS display columns
-    wdcs_cols = ["Web Order"] + [c for c in ["Brand In Article", "TotalBox", "SumOfPickQty", "Transport_No"] if c in wdcs_df.columns]
+    wdcs_cols = ["Web Order"] + [c for c in [
+        "Brand In Article", "TotalBox", "SumOfPickQty", "Transport_No", "Vehicleregistration",
+    ] if c in wdcs_df.columns]
 
     # Matched
     matched_wdcs = wdcs_df[wdcs_df["Web Order"].isin(matched_keys)][wdcs_cols].copy()
