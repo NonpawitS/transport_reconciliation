@@ -571,7 +571,7 @@ if "recon_results" in st.session_state:
                 if not result.extra_in_wms_df.empty:
                     st.dataframe(result.extra_in_wms_df, use_container_width=True, hide_index=True)
                 else:
-                    st.success("🎉 ครบถ้วน — ไม่มี Extra")
+                    st.success("🎉 ครบถ้วน ")
 
     # ── Render tabs ───────────────────────────────────────────────────────────
     for tab_obj, (slot_type, result, fv) in zip(tabs, tab_slots):
