@@ -23,6 +23,23 @@ def _fmt_dt(v) -> str:
         return str(v) if v and str(v) != "nan" else ""
 
 
+def _delta_hours(t_create, t_pickup) -> str:
+    """
+    Elapsed hours: t_pickup - t_create (how long after WMS create did SPX pick up).
+    Returns string e.g. '+5.2 ชม.' or '-1.3 ชม.' (negative = 3PL picked before WMS record).
+    """
+    try:
+        s1 = str(t_create).strip()
+        s2 = str(t_pickup).strip()
+        if not s1 or s1 == "nan" or not s2 or s2 == "nan":
+            return ""
+        diff_h = (pd.to_datetime(s2) - pd.to_datetime(s1)).total_seconds() / 3600
+        sign = "+" if diff_h >= 0 else ""
+        return f"{sign}{diff_h:.1f} ชม."
+    except Exception:
+        return ""
+
+
 def find_matching_transports(
     carrier_keys: set,
     wms_df: pd.DataFrame,
@@ -404,18 +421,18 @@ def reconcile_spx_tld(
         ono = tld_tracking_to_order_no.get(trk, "")
         if ono:
             spx_merge_rows.append({tld_order_col: ono, "SPX Tracking": trk, "SPX Order SN": str(r["order_sn"]).strip(),
-                                    "SPX Pickup Time": _fmt_dt(r.get("pickup_time", ""))})
+                                    "_pickup_raw": str(r.get("pickup_time", "") or "").strip()})
     for r in matched_by_orderkey:
         osn = str(r["order_sn"]).strip()
         ono = tld_orderkey_to_order_no.get(osn, "")
         if ono:
             spx_merge_rows.append({tld_order_col: ono, "SPX Tracking": str(r["tracking"]).strip(), "SPX Order SN": osn,
-                                    "SPX Pickup Time": _fmt_dt(r.get("pickup_time", ""))})
+                                    "_pickup_raw": str(r.get("pickup_time", "") or "").strip()})
 
     spx_merge_df = (
         pd.DataFrame(spx_merge_rows)
         if spx_merge_rows
-        else pd.DataFrame(columns=[tld_order_col, "SPX Tracking", "SPX Order SN", "SPX Pickup Time"])
+        else pd.DataFrame(columns=[tld_order_col, "SPX Tracking", "SPX Order SN", "_pickup_raw"])
     )
     if not matched_tld.empty:
         matched_df = matched_tld.merge(spx_merge_df, on=tld_order_col, how="left")
@@ -424,12 +441,18 @@ def reconcile_spx_tld(
                               lambda o: "Tracking" if o in tracking_order_nos else "Order SN"
                           ))
         matched_df.insert(0, "Status", "Matched ✅")
-        # Inject TLD No. column
         matched_df.insert(1, "TLD No.", tld_no)
+        # Compute duration BEFORE formatting (need raw datetime strings)
+        if "Create date&time" in matched_df.columns and "_pickup_raw" in matched_df.columns:
+            matched_df["ระยะเวลา SPX-WMS (ชม.)"] = matched_df.apply(
+                lambda row: _delta_hours(row["Create date&time"], row["_pickup_raw"]), axis=1
+            )
         # Format datetimes
-        for _dc in ("Create date&time", "SPX Pickup Time"):
-            if _dc in matched_df.columns:
-                matched_df[_dc] = matched_df[_dc].apply(_fmt_dt)
+        if "Create date&time" in matched_df.columns:
+            matched_df["Create date&time"] = matched_df["Create date&time"].apply(_fmt_dt)
+        if "_pickup_raw" in matched_df.columns:
+            matched_df["SPX Pickup Time"] = matched_df["_pickup_raw"].apply(_fmt_dt)
+            matched_df.drop(columns=["_pickup_raw"], inplace=True)
     else:
         matched_df = pd.DataFrame()
 

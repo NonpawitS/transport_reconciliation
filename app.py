@@ -626,7 +626,7 @@ if "recon_results" in st.session_state:
 
                 # ── ct1: Unified confirmed table ──────────────────────────────
                 _UNIFIED_COLS = ["ระบบ","TLD / Transport No.","SPX Order SN","SPX Tracking",
-                                 "Create Date (WMS)","SPX Pickup Time",
+                                 "Create Date (WMS)","SPX Pickup Time","ระยะเวลา (ชม.)",
                                  "WMS Order Key","Brand","Pallet No","Carrier"]
 
                 def _build_fc_unified(df: pd.DataFrame, label: str, tld_no_val: str = "") -> pd.DataFrame:
@@ -634,19 +634,21 @@ if "recon_results" in st.session_state:
                         return pd.DataFrame(columns=_UNIFIED_COLS)
                     r = df.reset_index(drop=True)
                     order_key_col = "Order no" if "Order no" in r.columns else ("Order No" if "Order No" in r.columns else "")
-                    load_col      = "Truck Load No"      if "Truck Load No"      in r.columns else ""
-                    create_col    = "Create date&time"   if "Create date&time"   in r.columns else ""
+                    load_col      = "Truck Load No"    if "Truck Load No"    in r.columns else ""
+                    create_col    = "Create date&time" if "Create date&time" in r.columns else ""
+                    dur_col       = "ระยะเวลา SPX-WMS (ชม.)" if "ระยะเวลา SPX-WMS (ชม.)" in r.columns else ""
                     return pd.DataFrame({
                         "ระบบ":               label,
                         "TLD / Transport No.": tld_no_val,
-                        "SPX Order SN":        r["SPX Order SN"]      if "SPX Order SN"      in r.columns else "",
-                        "SPX Tracking":        r["SPX Tracking"]      if "SPX Tracking"      in r.columns else "",
-                        "Create Date (WMS)":   r[create_col]          if create_col          else (r[load_col] if load_col else ""),
-                        "SPX Pickup Time":     r["SPX Pickup Time"]   if "SPX Pickup Time"   in r.columns else "",
-                        "WMS Order Key":       r[order_key_col]       if order_key_col       else "",
-                        "Brand":               r["Brand No"]          if "Brand No"          in r.columns else (r["Brand In Article"] if "Brand In Article" in r.columns else ""),
-                        "Pallet No":           r["Pallet No"]         if "Pallet No"         in r.columns else "",
-                        "Carrier":             r["Carrier"]           if "Carrier"           in r.columns else "",
+                        "SPX Order SN":        r["SPX Order SN"]              if "SPX Order SN"      in r.columns else "",
+                        "SPX Tracking":        r["SPX Tracking"]              if "SPX Tracking"      in r.columns else "",
+                        "Create Date (WMS)":   r[create_col]                  if create_col          else (r[load_col] if load_col else ""),
+                        "SPX Pickup Time":     r["SPX Pickup Time"]           if "SPX Pickup Time"   in r.columns else "",
+                        "ระยะเวลา (ชม.)":      r[dur_col]                     if dur_col             else "",
+                        "WMS Order Key":       r[order_key_col]               if order_key_col       else "",
+                        "Brand":               r["Brand No"]                  if "Brand No"          in r.columns else (r["Brand In Article"] if "Brand In Article" in r.columns else ""),
+                        "Pallet No":           r["Pallet No"]                 if "Pallet No"         in r.columns else "",
+                        "Carrier":             r["Carrier"]                   if "Carrier"           in r.columns else "",
                     })
 
                 def _build_wdcs_unified(df: pd.DataFrame, transport_val: str = "") -> pd.DataFrame:
@@ -659,11 +661,12 @@ if "recon_results" in st.session_state:
                         "TLD / Transport No.": transport_val,
                         "SPX Order SN":        r["Web Order"]         if "Web Order"         in r.columns else "",
                         "SPX Tracking":        r["SPX Tracking"]      if "SPX Tracking"      in r.columns else "",
+                        "Create Date (WMS)":   "",
                         "SPX Pickup Time":     r["SPX Pickup Time"]   if "SPX Pickup Time"   in r.columns else "",
+                        "ระยะเวลา (ชม.)":      "",
                         "WMS Order Key":       r["Web Order"]         if "Web Order"         in r.columns else "",
                         "Brand":               r["Brand In Article"]  if "Brand In Article"  in r.columns else "",
                         "Pallet No":           "",
-                        "Create Date (WMS)":   "",
                         "Carrier":             _car,
                     })
 
