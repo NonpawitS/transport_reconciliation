@@ -12,6 +12,17 @@ import pandas as pd
 from dataclasses import dataclass
 
 
+def _fmt_dt(v) -> str:
+    """Format datetime value → dd/mm/yyyy HH:MM  (data assumed Bangkok UTC+7)"""
+    try:
+        s = str(v).strip()
+        if not s or s == "nan":
+            return ""
+        return pd.to_datetime(s).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(v) if v and str(v) != "nan" else ""
+
+
 def find_matching_transports(
     carrier_keys: set,
     wms_df: pd.DataFrame,
@@ -81,9 +92,11 @@ def reconcile_spx_wdcs(
 
     # Matched
     matched_wdcs = wdcs_df[wdcs_df["Web Order"].isin(matched_keys)][wdcs_cols].copy()
-    matched_spx = spx_df[spx_df["order_sn"].isin(matched_keys)][["order_sn", "tracking"]].copy()
-    matched_spx.columns = ["Web Order", "SPX Tracking"]
+    matched_spx = spx_df[spx_df["order_sn"].isin(matched_keys)][["order_sn", "tracking", "pickup_time"]].copy()
+    matched_spx.columns = ["Web Order", "SPX Tracking", "SPX Pickup Time"]
     matched_df = matched_wdcs.merge(matched_spx, on="Web Order", how="left")
+    if "SPX Pickup Time" in matched_df.columns:
+        matched_df["SPX Pickup Time"] = matched_df["SPX Pickup Time"].apply(_fmt_dt)
     matched_df.insert(0, "Status", "Matched ✅")
 
     # Missing in WMS (3PL picked but WMS has no record)
@@ -223,17 +236,19 @@ def reconcile_spx_fc(
         trk = str(r["tracking"]).strip()
         ono = fc_tracking_to_order_no.get(trk, "")
         if ono:
-            spx_merge_rows.append({fc_order_col: ono, "SPX Tracking": trk, "SPX Order SN": str(r["order_sn"]).strip()})
+            spx_merge_rows.append({fc_order_col: ono, "SPX Tracking": trk, "SPX Order SN": str(r["order_sn"]).strip(),
+                                    "SPX Pickup Time": _fmt_dt(r.get("pickup_time", ""))})
     for r in matched_by_orderkey:
         osn = str(r["order_sn"]).strip()
         ono = fc_orderkey_to_order_no.get(osn, "")
         if ono:
-            spx_merge_rows.append({fc_order_col: ono, "SPX Tracking": str(r["tracking"]).strip(), "SPX Order SN": osn})
+            spx_merge_rows.append({fc_order_col: ono, "SPX Tracking": str(r["tracking"]).strip(), "SPX Order SN": osn,
+                                    "SPX Pickup Time": _fmt_dt(r.get("pickup_time", ""))})
 
     spx_merge_df = (
         pd.DataFrame(spx_merge_rows)
         if spx_merge_rows
-        else pd.DataFrame(columns=[fc_order_col, "SPX Tracking", "SPX Order SN"])
+        else pd.DataFrame(columns=[fc_order_col, "SPX Tracking", "SPX Order SN", "SPX Pickup Time"])
     )
     if not matched_fc.empty:
         matched_df = matched_fc.merge(spx_merge_df, on=fc_order_col, how="left")
@@ -388,17 +403,19 @@ def reconcile_spx_tld(
         trk = str(r["tracking"]).strip()
         ono = tld_tracking_to_order_no.get(trk, "")
         if ono:
-            spx_merge_rows.append({tld_order_col: ono, "SPX Tracking": trk, "SPX Order SN": str(r["order_sn"]).strip()})
+            spx_merge_rows.append({tld_order_col: ono, "SPX Tracking": trk, "SPX Order SN": str(r["order_sn"]).strip(),
+                                    "SPX Pickup Time": _fmt_dt(r.get("pickup_time", ""))})
     for r in matched_by_orderkey:
         osn = str(r["order_sn"]).strip()
         ono = tld_orderkey_to_order_no.get(osn, "")
         if ono:
-            spx_merge_rows.append({tld_order_col: ono, "SPX Tracking": str(r["tracking"]).strip(), "SPX Order SN": osn})
+            spx_merge_rows.append({tld_order_col: ono, "SPX Tracking": str(r["tracking"]).strip(), "SPX Order SN": osn,
+                                    "SPX Pickup Time": _fmt_dt(r.get("pickup_time", ""))})
 
     spx_merge_df = (
         pd.DataFrame(spx_merge_rows)
         if spx_merge_rows
-        else pd.DataFrame(columns=[tld_order_col, "SPX Tracking", "SPX Order SN"])
+        else pd.DataFrame(columns=[tld_order_col, "SPX Tracking", "SPX Order SN", "SPX Pickup Time"])
     )
     if not matched_tld.empty:
         matched_df = matched_tld.merge(spx_merge_df, on=tld_order_col, how="left")
@@ -409,14 +426,10 @@ def reconcile_spx_tld(
         matched_df.insert(0, "Status", "Matched ✅")
         # Inject TLD No. column
         matched_df.insert(1, "TLD No.", tld_no)
-        # Format Create date&time → dd/mm/yyyy HH:MM (Bangkok time = data already UTC+7)
-        if "Create date&time" in matched_df.columns:
-            def _fmt_bkk(v):
-                try:
-                    return pd.to_datetime(v).strftime("%d/%m/%Y %H:%M")
-                except Exception:
-                    return str(v) if v and str(v) != "nan" else ""
-            matched_df["Create date&time"] = matched_df["Create date&time"].apply(_fmt_bkk)
+        # Format datetimes
+        for _dc in ("Create date&time", "SPX Pickup Time"):
+            if _dc in matched_df.columns:
+                matched_df[_dc] = matched_df[_dc].apply(_fmt_dt)
     else:
         matched_df = pd.DataFrame()
 
