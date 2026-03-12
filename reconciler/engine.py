@@ -25,17 +25,19 @@ def _fmt_dt(v) -> str:
 
 def _delta_hours(t_create, t_pickup) -> str:
     """
-    Elapsed hours: t_pickup - t_create (how long after WMS create did SPX pick up).
-    Returns string e.g. '+5.2 ชม.' or '-1.3 ชม.' (negative = 3PL picked before WMS record).
+    Elapsed time: t_pickup - t_create → 'XX ชม. X นาที'
+    Negative (3PL picked before WMS record) → '-XX ชม. X นาที'
     """
     try:
         s1 = str(t_create).strip()
         s2 = str(t_pickup).strip()
         if not s1 or s1 == "nan" or not s2 or s2 == "nan":
             return ""
-        diff_h = (pd.to_datetime(s2) - pd.to_datetime(s1)).total_seconds() / 3600
-        sign = "+" if diff_h >= 0 else ""
-        return f"{sign}{diff_h:.1f} ชม."
+        total_min = int(round((pd.to_datetime(s2) - pd.to_datetime(s1)).total_seconds() / 60))
+        sign = "-" if total_min < 0 else ""
+        total_min = abs(total_min)
+        h, m = divmod(total_min, 60)
+        return f"{sign}{h} ชม. {m} นาที"
     except Exception:
         return ""
 
