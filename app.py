@@ -626,8 +626,8 @@ if "recon_results" in st.session_state:
 
                 # ── ct1: Unified confirmed table ──────────────────────────────
                 _UNIFIED_COLS = ["ระบบ","TLD / Transport No.","SPX Order SN","SPX Tracking",
-                                 "SPX Pickup Time","WMS Order Key","Brand","Pallet No",
-                                 "Create Date (WMS)","Carrier"]
+                                 "Create Date (WMS)","SPX Pickup Time",
+                                 "WMS Order Key","Brand","Pallet No","Carrier"]
 
                 def _build_fc_unified(df: pd.DataFrame, label: str, tld_no_val: str = "") -> pd.DataFrame:
                     if df.empty:
@@ -641,11 +641,11 @@ if "recon_results" in st.session_state:
                         "TLD / Transport No.": tld_no_val,
                         "SPX Order SN":        r["SPX Order SN"]      if "SPX Order SN"      in r.columns else "",
                         "SPX Tracking":        r["SPX Tracking"]      if "SPX Tracking"      in r.columns else "",
+                        "Create Date (WMS)":   r[create_col]          if create_col          else (r[load_col] if load_col else ""),
                         "SPX Pickup Time":     r["SPX Pickup Time"]   if "SPX Pickup Time"   in r.columns else "",
                         "WMS Order Key":       r[order_key_col]       if order_key_col       else "",
                         "Brand":               r["Brand No"]          if "Brand No"          in r.columns else (r["Brand In Article"] if "Brand In Article" in r.columns else ""),
                         "Pallet No":           r["Pallet No"]         if "Pallet No"         in r.columns else "",
-                        "Create Date (WMS)":   r[create_col]          if create_col          else (r[load_col] if load_col else ""),
                         "Carrier":             r["Carrier"]           if "Carrier"           in r.columns else "",
                     })
 

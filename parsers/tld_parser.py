@@ -13,6 +13,7 @@ Key columns:
   Brand No          — brand
   Pallet No         — pallet
   Carton No         — carton
+  Create date&time  — WMS create timestamp (used for matching timeline)
   Handover date&time
 """
 import io, re
@@ -21,7 +22,7 @@ import pandas as pd
 REQUIRED_COLUMNS = ["Tracking Number", "Order No"]
 KEY_COLUMNS = [
     "No", "Brand No", "Pallet No", "Tracking Number",
-    "Carton No", "Order No", "Handover date&time",
+    "Carton No", "Order No", "Create date&time", "Handover date&time",
 ]
 
 
