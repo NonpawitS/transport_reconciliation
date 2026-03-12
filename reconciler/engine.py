@@ -314,7 +314,7 @@ def reconcile_spx_tld(
     tld_order_col    = "Order No"
 
     tld_cols_display = [tld_order_col] + [c for c in [
-        "Tracking Number", "Brand No", "Pallet No", "Carton No", "Handover date&time",
+        "Tracking Number", "Brand No", "Pallet No", "Carton No", "Create date&time",
     ] if c in tld_df.columns]
 
     # ── tracking → Order No lookup ────────────────────────────────────────────
@@ -407,6 +407,16 @@ def reconcile_spx_tld(
                               lambda o: "Tracking" if o in tracking_order_nos else "Order SN"
                           ))
         matched_df.insert(0, "Status", "Matched ✅")
+        # Inject TLD No. column
+        matched_df.insert(1, "TLD No.", tld_no)
+        # Format Create date&time → dd/mm/yyyy HH:MM (Bangkok time = data already UTC+7)
+        if "Create date&time" in matched_df.columns:
+            def _fmt_bkk(v):
+                try:
+                    return pd.to_datetime(v).strftime("%d/%m/%Y %H:%M")
+                except Exception:
+                    return str(v) if v and str(v) != "nan" else ""
+            matched_df["Create date&time"] = matched_df["Create date&time"].apply(_fmt_bkk)
     else:
         matched_df = pd.DataFrame()
 

@@ -627,11 +627,11 @@ if "recon_results" in st.session_state:
                 # ── ct1: Unified confirmed table ──────────────────────────────
                 def _build_fc_unified(df: pd.DataFrame, label: str, tld_no_val: str = "") -> pd.DataFrame:
                     if df.empty:
-                        return pd.DataFrame(columns=["ระบบ","TLD / Transport No.","SPX Order SN","SPX Tracking","WMS Order Key","Brand","Pallet No","Handover date","Carrier"])
+                        return pd.DataFrame(columns=["ระบบ","TLD / Transport No.","SPX Order SN","SPX Tracking","WMS Order Key","Brand","Pallet No","Create Date","Carrier"])
                     r = df.reset_index(drop=True)
                     order_key_col = "Order no" if "Order no" in r.columns else ("Order No" if "Order No" in r.columns else "")
-                    load_col      = "Truck Load No"       if "Truck Load No"       in r.columns else ""
-                    handover_col  = "Handover date&time"  if "Handover date&time"  in r.columns else ""
+                    load_col      = "Truck Load No"      if "Truck Load No"      in r.columns else ""
+                    create_col    = "Create date&time"   if "Create date&time"   in r.columns else ""
                     return pd.DataFrame({
                         "ระบบ":               label,
                         "TLD / Transport No.": tld_no_val,
@@ -640,13 +640,13 @@ if "recon_results" in st.session_state:
                         "WMS Order Key":       r[order_key_col]     if order_key_col     else "",
                         "Brand":               r["Brand No"]        if "Brand No"        in r.columns else (r["Brand In Article"] if "Brand In Article" in r.columns else ""),
                         "Pallet No":           r["Pallet No"]       if "Pallet No"       in r.columns else "",
-                        "Handover date":       r[handover_col]      if handover_col      else (r[load_col] if load_col else ""),
+                        "Create Date":         r[create_col]        if create_col        else (r[load_col] if load_col else ""),
                         "Carrier":             r["Carrier"]         if "Carrier"         in r.columns else "",
                     })
 
                 def _build_wdcs_unified(df: pd.DataFrame, transport_val: str = "") -> pd.DataFrame:
                     if df.empty:
-                        return pd.DataFrame(columns=["ระบบ","TLD / Transport No.","SPX Order SN","SPX Tracking","WMS Order Key","Brand","Pallet No","Handover date","Carrier"])
+                        return pd.DataFrame(columns=["ระบบ","TLD / Transport No.","SPX Order SN","SPX Tracking","WMS Order Key","Brand","Pallet No","Create Date","Carrier"])
                     r = df.reset_index(drop=True)
                     _car = r["Vehicleregistration"] if "Vehicleregistration" in r.columns else ""
                     return pd.DataFrame({
@@ -657,7 +657,7 @@ if "recon_results" in st.session_state:
                         "WMS Order Key":       r["Web Order"]       if "Web Order"       in r.columns else "",
                         "Brand":               r["Brand In Article"]if "Brand In Article"in r.columns else "",
                         "Pallet No":           "",
-                        "Handover date":       "",
+                        "Create Date":         "",
                         "Carrier":             _car,
                     })
 
