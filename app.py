@@ -735,20 +735,67 @@ if "recon_results" in st.session_state:
         else:
             render_result(tab_obj, slot_type, result, fv)
 
-    # ── Export Excel ──────────────────────────────────────────────────────────
+    # ── Export Excel (Minimal Calibri style + auto-fit) ───────────────────────
+    def _write_sheet(writer, df: pd.DataFrame, sheet_name: str):
+        """Write DataFrame to sheet with Calibri 11pt, styled header, auto-fit columns."""
+        if df.empty:
+            df = df.copy()  # write empty with headers
+        df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, header=False)
+
+        wb  = writer.book
+        ws  = writer.sheets[sheet_name]
+
+        # ── Formats ──────────────────────────────────────────────────────────
+        base = {"font_name": "Calibri", "font_size": 11}
+        fmt_hdr = wb.add_format({**base,
+            "bold": True, "font_color": "#FFFFFF",
+            "bg_color": "#1F4E79", "border": 1,
+            "align": "center", "valign": "vcenter", "text_wrap": True})
+        fmt_data = wb.add_format({**base,
+            "border": 0, "bottom": 1, "border_color": "#D9D9D9",
+            "valign": "vcenter"})
+        fmt_data_alt = wb.add_format({**base,
+            "border": 0, "bottom": 1, "border_color": "#D9D9D9",
+            "bg_color": "#F7FBFF", "valign": "vcenter"})
+
+        # ── Write headers (row 0) ─────────────────────────────────────────────
+        for col_idx, col_name in enumerate(df.columns):
+            ws.write(0, col_idx, col_name, fmt_hdr)
+
+        # ── Write data rows with alternating fill ─────────────────────────────
+        for row_idx, row in enumerate(df.itertuples(index=False), start=1):
+            fmt = fmt_data_alt if row_idx % 2 == 0 else fmt_data
+            for col_idx, val in enumerate(row):
+                ws.write(row_idx, col_idx, "" if val is None or (isinstance(val, float) and pd.isna(val)) else val, fmt)
+
+        # ── Auto-fit column widths (based on header + data max length) ────────
+        for col_idx, col_name in enumerate(df.columns):
+            header_len = len(str(col_name))
+            if df.empty:
+                data_len = 0
+            else:
+                data_len = df.iloc[:, col_idx].astype(str).str.len().max()
+                data_len = int(data_len) if not pd.isna(data_len) else 0
+            col_width = min(max(header_len, data_len) + 2, 45)  # cap at 45
+            ws.set_column(col_idx, col_idx, col_width)
+
+        # ── Freeze top row ────────────────────────────────────────────────────
+        ws.freeze_panes(1, 0)
+        ws.set_row(0, 22)  # header row height
+
     st.divider()
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
         for r, label in results_list:
             s = r.summary
-            r.matched_df.to_excel(writer,         sheet_name=f"{label}_Matched",  index=False)
-            r.missing_in_wms_df.to_excel(writer,  sheet_name=f"{label}_Missing",  index=False)
-            r.extra_in_wms_df.to_excel(writer,    sheet_name=f"{label}_Extra",    index=False)
-            pd.DataFrame({
+            _write_sheet(writer, r.matched_df,        f"{label}_Matched")
+            _write_sheet(writer, r.missing_in_wms_df, f"{label}_Missing")
+            _write_sheet(writer, r.extra_in_wms_df,   f"{label}_Extra")
+            _write_sheet(writer, pd.DataFrame({
                 "Metric": ["Matched", "Missing WMS", "Extra WMS", "Match Rate", "Filter"],
                 "Value":  [s["matched"], s["missing_in_wms"], s["extra_in_wms"],
                            f"{s['match_rate']}%", r.filter_value or "(ทั้งไฟล์)"],
-            }).to_excel(writer, sheet_name=f"{label}_Summary", index=False)
+            }), f"{label}_Summary")
     buf.seek(0)
 
     suffix_parts = [r.filter_value for r, _ in results_list if r.filter_value]
