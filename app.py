@@ -427,9 +427,9 @@ if "recon_results" in st.session_state:
 
     st.success("✅ Reconcile สำเร็จ!")
     if _wms_master:
-        st.info("📦 มุมมอง WMS เป็นหลัก — แสดง Extra in WMS (สิ่งที่คลังปล่อยแต่ SPX ไม่ได้รับ) เป็นประเด็นหลัก")
+        st.info("📦 มุมมอง WMS เป็นหลัก — (ดูว่า Load ที่ปล่อย ตรงหรือไม่)")
     else:
-        st.info("🚚 มุมมอง SPX เป็นหลัก — แสดง Missing in WMS (3PL รับแต่คลังไม่มีบันทึก) เป็นประเด็นหลัก")
+        st.info("🚚 มุมมอง SPX เป็นหลัก — (ดูว่า SPX มีอะไรบ้าง)")
     st.divider()
 
     # ── Compute Combined sets ─────────────────────────────────────────────────
@@ -534,15 +534,15 @@ if "recon_results" in st.session_state:
             # ── Sub-tabs: order depends on perspective ────────────────────────
             if _wms_master:
                 sub_labels = [
-                    f"⚠️ Extra in WMS ({s['extra_in_wms']})",
+                    f"⚠️ เช็ค box ขาด/เกิน ({s['extra_in_wms']})",
                     f"✅ Matched ({s['matched']})",
-                    f"⚠️ Missing in WMS ({s['missing_in_wms']})",
+                    f"⚠️ อื่นๆ ที่มีในไฟล์ขนส่ง ({s['missing_in_wms']})",
                 ]
             else:
                 sub_labels = [
                     f"✅ Matched ({s['matched']})",
-                    f"⚠️ Missing in WMS ({s['missing_in_wms']})",
-                    f"⚠️ Extra in WMS ({s['extra_in_wms']})",
+                    f"⚠️ อื่นๆ ที่มีในไฟล์ขนส่ง ({s['missing_in_wms']})",
+                    f"⚠️ เช็ค box ขาด/เกิน ({s['extra_in_wms']})",
                 ]
 
             dt_tabs = st.tabs(sub_labels)
