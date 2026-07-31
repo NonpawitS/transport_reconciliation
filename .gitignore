@@ -1,3 +1,13 @@
+# ── ข้อมูลปฏิบัติการ — ห้ามขึ้น repo (เป็น public) ────────────────────────────
+# ไฟล์เหล่านี้มี tracking number, เลข order, ชื่อลูกค้า และเวลาปฏิบัติงานจริง
+Example File/
+*.xls
+*.xlsx
+*.csv
+*.txt
+!requirements.txt
+*.log
+
 # Python
 __pycache__/
 *.py[cod]
@@ -10,15 +20,14 @@ env/
 # Streamlit
 .streamlit/
 
-# Test / temp outputs
-*.txt
-*.xlsx
-!requirements.txt
+# Test / tooling
+.pytest_cache/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# IDE
+# IDE / local tooling (มี path เฉพาะเครื่อง)
 .vscode/
 .idea/
+.claude/

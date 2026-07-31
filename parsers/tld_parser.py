@@ -22,7 +22,7 @@ import pandas as pd
 REQUIRED_COLUMNS = ["Tracking Number", "Order No"]
 KEY_COLUMNS = [
     "No", "Brand No", "Pallet No", "Tracking Number",
-    "Carton No", "Order No", "Create date&time", "Handover date&time",
+    "Carton No", "Order No", "Create date&time", "Arrival date&time", "Handover date&time",
 ]
 
 
@@ -45,14 +45,15 @@ def parse_tld_xls(file_bytes: bytes) -> tuple[pd.DataFrame, str]:
     existing_cols = [c for c in KEY_COLUMNS if c in df.columns]
     df = df[existing_cols].copy()
 
+    # Normalize ทุกคอลัมน์เป็น string สะอาด — missing เป็น "" เสมอ
+    # (pandas 3 เก็บ missing เป็น pd.NA ซึ่ง .astype(str) ไม่แปลงให้ ต้อง fillna ก่อน)
+    for c in df.columns:
+        df[c] = (df[c].fillna("").astype(str).str.strip()
+                   .replace({"nan": "", "NaN": "", "NaT": "", "None": "", "<NA>": ""}))
+
     # Keep rows with a valid Order No
     if "Order No" in df.columns:
-        df["Order No"] = df["Order No"].astype(str).str.strip()
-        df = df[df["Order No"].notna() & (df["Order No"] != "") & (df["Order No"] != "nan")]
-
-    # Clean Tracking Number
-    if "Tracking Number" in df.columns:
-        df["Tracking Number"] = df["Tracking Number"].astype(str).str.strip().replace("nan", "")
+        df = df[df["Order No"].ne("")]
 
     return df.reset_index(drop=True), tld_no
 

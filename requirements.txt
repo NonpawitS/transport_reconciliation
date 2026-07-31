@@ -1,7 +1,9 @@
 streamlit>=1.32.0
-pandas>=2.0.0
+pandas>=2.2.0
 pdfplumber>=0.10.0
 openpyxl>=3.1.0
-chardet>=5.0.0
 xlsxwriter>=3.1.0
 xlrd>=2.0.1
+# Rust-based .xlsx reader: ~7x faster than openpyxl on the large FC Export DO file.
+# Optional at runtime - fc_parser falls back to openpyxl if unavailable.
+python-calamine>=0.2.0
