@@ -17,7 +17,7 @@ from parsers.fc_parser       import (
 from reconciler.engine import (
     reconcile_spx_tld, enrich_with_fc, match_key,
     build_order_groups, annotate_order_groups, collect_multi_tracking,
-    build_unmatched_df, pair_unmatched, SIDE_COL, SIDE_SPX_ONLY, SIDE_TLD_ONLY,
+    build_unmatched_df, pair_unmatched, _PAIR_SCAN_LIMIT, SIDE_COL, SIDE_SPX_ONLY, SIDE_TLD_ONLY,
 )
 
 # ── Page Config ───────────────────────────────────────────────────────────────
@@ -37,6 +37,10 @@ st.markdown("""
 .stTabs [aria-selected="true"] { background-color: #1f4e79; color: white; }
 </style>
 """, unsafe_allow_html=True)
+
+
+# จำนวนไฟล์สูงสุดต่อช่องอัปโหลด (SPX / TLD)
+MAX_FILES = 40
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -75,11 +79,15 @@ st.subheader("Step 1 — อัปโหลดไฟล์")
 # ── SPX: multi-file, PDF + Excel ผสมกันได้ ────────────────────────────────────
 st.markdown("**🚚 Carrier: SPX** *(เลือกได้หลายไฟล์ และผสม PDF กับ Excel ในคราวเดียวได้)*")
 carrier_files = st.file_uploader(
-    "SPX = .pdf (Shipment List) หรือ .xlsx (Transport Order)  —  Ctrl+click / Shift+click เพื่อเลือกหลายไฟล์",
+    f"SPX = .pdf (Shipment List) หรือ .xlsx (Transport Order) สูงสุด {MAX_FILES} ไฟล์  —  Ctrl+click / Shift+click เพื่อเลือกหลายไฟล์",
     type=["pdf", "xlsx"],
     accept_multiple_files=True,
     key="carrier",
 )
+if len(carrier_files) > MAX_FILES:
+    st.warning(f"⚠️ SPX อัปโหลดได้สูงสุด {MAX_FILES} ไฟล์ — จะใช้แค่ {MAX_FILES} ไฟล์แรก "
+               f"(เลือกมา {len(carrier_files)} ไฟล์)")
+    carrier_files = carrier_files[:MAX_FILES]
 if carrier_files:
     _n_xlsx = sum(1 for f in carrier_files if is_spx_excel(f))
     _n_pdf  = len(carrier_files) - _n_xlsx
@@ -105,11 +113,15 @@ col_tld, col_fc = st.columns(2)
 with col_tld:
     st.markdown("**📋 TLD Report** — *ระบบที่ใช้เทียบ (จำเป็น)*")
     tld_files = st.file_uploader(
-        "TLD_Report .xls (เลือกได้หลายไฟล์)",
+        f"TLD_Report .xls (เลือกได้หลายไฟล์ สูงสุด {MAX_FILES} ไฟล์)",
         type=["xls"],
         accept_multiple_files=True,
         key="tld_file",
     )
+    if len(tld_files) > MAX_FILES:
+        st.warning(f"⚠️ TLD อัปโหลดได้สูงสุด {MAX_FILES} ไฟล์ — จะใช้แค่ {MAX_FILES} ไฟล์แรก "
+                   f"(เลือกมา {len(tld_files)} ไฟล์)")
+        tld_files = tld_files[:MAX_FILES]
     if tld_files:
         st.success(f"✅ TLD: {len(tld_files)} ไฟล์")
 
@@ -460,7 +472,7 @@ if "recon_results" in st.session_state:
                 f"จับคู่ได้ {n_pairs} คู่ | เหลือค้างจริง — SPX {_left_spx} / TLD {_left_tld}"
             )
         if pair_stats["scan_skipped"]:
-            st.caption("⚠️ รายการค้างเยอะเกิน 500 — ข้ามการเทียบความคล้ายของ Tracking ทีละคู่")
+            st.caption(f"⚠️ รายการค้างเยอะเกิน {_PAIR_SCAN_LIMIT:,} — ข้ามการเทียบความคล้ายของ Tracking ทีละคู่")
 
     with _tab_multi:
         st.caption(

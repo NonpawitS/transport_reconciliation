@@ -246,7 +246,7 @@ UNMATCHED_COLS = [SIDE_COL, "Tracking", "Order SN", "Order No (WMS)", "SPX TO No
 PAIR_COLS = ["Tracking (SPX)", "Tracking (TLD)", "Order SN", "Order No (WMS)", "สาเหตุที่น่าจะเป็น"]
 
 # ถ้าทั้งสองฝั่งใหญ่กว่านี้ ข้ามการเทียบตัวอักษรทีละคู่ (O(n×m)) เพื่อไม่ให้ค้าง
-_PAIR_SCAN_LIMIT = 500
+_PAIR_SCAN_LIMIT = 4000
 
 
 def _norm_tracking(s: str) -> str:
@@ -254,11 +254,18 @@ def _norm_tracking(s: str) -> str:
     return "".join(ch for ch in _clean_str(s).upper() if ch.isalnum())
 
 
-def _char_diff(a: str, b: str) -> int:
-    """จำนวนตำแหน่งที่ต่างกัน (ยาวเท่ากันเท่านั้น) — ใช้จับ tracking ที่พิมพ์/สแกนผิดไม่กี่ตัว"""
+def _char_diff(a: str, b: str, limit: int = 999) -> int:
+    """จำนวนตำแหน่งที่ต่างกัน (ยาวเท่ากันเท่านั้น) — ใช้จับ tracking ที่พิมพ์/สแกนผิดไม่กี่ตัว
+    หยุดนับทันทีเมื่อถึง limit (คืนค่า limit) เพื่อให้สแกนหลายพันคู่ได้เร็ว"""
     if len(a) != len(b):
         return 999
-    return sum(1 for x, y in zip(a, b) if x != y)
+    d = 0
+    for x, y in zip(a, b):
+        if x != y:
+            d += 1
+            if d >= limit:
+                return limit
+    return d
 
 
 def build_unmatched_df(missing_df: pd.DataFrame, extra_df: pd.DataFrame) -> pd.DataFrame:
@@ -371,13 +378,18 @@ def pair_unmatched(missing_df: pd.DataFrame, extra_df: pd.DataFrame) -> tuple[pd
     if len(rest_spx) > _PAIR_SCAN_LIMIT or len(rest_tld) > _PAIR_SCAN_LIMIT:
         stats["scan_skipped"] = True
     else:
+        # normalize ครั้งเดียว และจัดกลุ่มตามความยาว — เทียบเฉพาะ tracking ที่ยาวเท่ากัน
+        tld_by_len: dict[int, list[tuple[int, str]]] = {}
+        for j in rest_tld:
+            b = _norm_tracking(tld[j]["trk"])
+            tld_by_len.setdefault(len(b), []).append((j, b))
         for i in rest_spx:
             a = _norm_tracking(spx[i]["trk"])
             best, best_d = None, 3           # ยอมรับต่างได้ไม่เกิน 2 ตัว
-            for j in rest_tld:
+            for j, b in tld_by_len.get(len(a), ()):
                 if j in used_tld:
                     continue
-                d = _char_diff(a, _norm_tracking(tld[j]["trk"]))
+                d = _char_diff(a, b, best_d)
                 if d < best_d:
                     best, best_d = j, d
             if best is not None:
